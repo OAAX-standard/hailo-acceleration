@@ -1,11 +1,11 @@
 # Hailo-8 Acceleration
 
-This folder contains the shared library and the Docker image that can be used by users and application developers to benefit from the acceleration offered by Hailo-8 chip on x86_64 machines.
+This folder contains the source code of the shared library and the Docker image that can be used by AI application developers to benefit from the acceleration offered by Hailo-8 chip on x86_64 machines.
 
 ## Artifacts
 
-The OAAX runtime is available as a shared library that can be used by developers to load and run optimized models on a Hailo-8 AI Accelerator.
-Whereas the conversion toolchain is available as a Docker image that can be used to convert ONNX models to ONNX models with a HailoOp node that contains the accelerated subgraph.
+- The OAAX runtime is available as a shared library that can be used by developers to load and run optimized models on a Hailo-8 AI Accelerator.
+- Whereas the conversion toolchain is available as a Docker image that can be used to convert ONNX models to ONNX models with a HailoOp node that contains the accelerated subgraph.
 
 
 ## Usage
