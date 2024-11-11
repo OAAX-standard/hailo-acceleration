@@ -1,0 +1,3 @@
+numpy >= @Python_NumPy_VERSION@
+protobuf==3.19.5
+flatbuffers
