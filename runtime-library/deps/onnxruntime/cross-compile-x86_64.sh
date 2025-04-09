@@ -4,7 +4,7 @@ set -e
 
 BASE_DIR="$(cd "$(dirname "$0")"; pwd)";
 
-declare -a hailort_versionnames=("4.17.0" "4.18.0" "4.19.0")
+declare -a hailort_versionnames=("4.17.0" "4.18.0" "4.19.0" "4.20.0")
 
 ## now loop through the above array
 for i in "${!hailort_versionnames[@]}"
@@ -42,7 +42,8 @@ bash ./build.sh --config Release --parallel --x86 --skip_tests --use_hailo --cma
   CMAKE_LIBRARY_PATH="$BASE_DIR/../lib" \
   CMAKE_PREFIX_PATH="$BASE_DIR/$ort_foldername/cmakes" \
   onnxruntime_BUILD_UNIT_TESTS=OFF \
-  onnxruntime_ENABLE_CPUINFO=OFF
+  onnxruntime_ENABLE_CPUINFO=OFF \
+  CMAKE_POLICY_VERSION_MINIMUM=3.5
 
   #build nsync
   cd build/Linux/Release/external/nsync

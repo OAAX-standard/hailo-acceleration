@@ -4,7 +4,7 @@ set -e
 
 BASE_DIR="$(cd "$(dirname "$0")"; pwd)";
 
-declare -a hailort_versionnames=("4.17.0" "4.18.0" "4.19.0")
+declare -a hailort_versionnames=("4.17.0" "4.18.0" "4.19.0" "4.20.0")
 
 ## now loop through the above array
 for i in "${!hailort_versionnames[@]}"
@@ -66,7 +66,8 @@ bash ./build.sh --config Release --parallel --arm64 --skip_tests --use_hailo --c
     onnxruntime_CROSS_AARCH64COMPILING=ON \
     onnxruntime_CROSS_COMPILING=ON \
     onnxruntime_ENABLE_CPUINFO=ON \
-    ONNX_CUSTOM_PROTOC_EXECUTABLE=${PROTO_BIN_DIR}
+    CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    ONNX_CUSTOM_PROTOC_EXECUTABLE=${PROTO_BIN_DIR} 
 
   #build nsync
   cd build/Linux/Release/external/nsync
