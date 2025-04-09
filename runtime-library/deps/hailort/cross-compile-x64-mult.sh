@@ -5,7 +5,7 @@ set -e
 BASE_DIR="$(cd "$(dirname "$0")"; pwd)";
 cd $BASE_DIR
 
-declare -a hailort_versionnames=("4.17.0" "4.18.0" "4.19.0")
+declare -a hailort_versionnames=("4.17.0" "4.18.0" "4.19.0" "4.20.0")
 
 # create source and destination folders
 declare -a hailort_source_foldernames=("${hailort_versionnames[@]/#/hailort-}")
@@ -46,7 +46,8 @@ do
   -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
   -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
   -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
-  -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
+  -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
 
   cmake --build build --config release --target libhailort -j8
