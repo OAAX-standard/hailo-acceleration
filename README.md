@@ -1,74 +1,32 @@
-# Hailo-8 Acceleration
+# Hailo Acceleration
 
-This folder contains the source code of the shared library and the Docker image that can be used by AI application developers to benefit from the acceleration offered by Hailo-8 chip on x86_64 machines.
+This folder contains the source code of the shared library and the Docker image that can be used by AI application developers to benefit from the acceleration offered by Hailo AI Accelerators such as Hailo-8 and Hailo-8L.
 
-## Artifacts
+## Repository structure
 
-- The OAAX runtime is available as a shared library that can be used by developers to load and run optimized models on a Hailo-8 AI Accelerator.
-- Whereas the conversion toolchain is available as a Docker image that can be used to convert ONNX models to ONNX models with a HailoOp node that contains the accelerated subgraph.
+The repository is structured as follows:
 
+- [Conversion toolchain](conversion-toolchain): Contains the source code for building the OAAX conversion toolchain.
+- [Runtime library](runtime-library): Contains the source code for building the OAAX runtime.
 
-## Usage
+Each folder contains a README file that provides more details about the different parts of the implementation.
 
-### Using the conversion toolchain
+## Building the implementation
 
-The Hailo conversion toolchain requires certain dependencies to function properly, namely:
+You can build the conversion toolchain and the runtime separately by calling the (Shell) build scripts in each folder.
+That will create an `artifacts/` directory in each folder containing the compiled binaries: a compressed Docker image and shared libraries (for X86_64 and AARCH64 target machines) respectively.
 
-- hailo_dataflow_compiler-`<version>`-py3-none-linux_x86_64.whl
-- hailort-`<version>`-cp38-cp38-linux_x86_64.whl
-- hailort_`<version>`_amd64.deb
+## Pre-built OAAX artifacts
 
-Those dependencies need to be accessible to the toolchain to be able to convert models.
-The toolchain expects them to be available in the `/app/hailo-deps` directory of the container's filesystem when it's
-started.  
-That can be achieved by mounting a volume to the container when it's started, like so:
+If you're interested in using the OAAX toolchain and runtime without building them, you can find them in the
+[contributions](https://github.com/oaax-standard/contributions) repository.   
+Additionally, you can find a diverse set of examples and applications of using the OAAX runtime in the 
+[examples](https://github.com/oaax-standard/examples) repository.
 
-```bash
-docker run -v /path/to/hailo-deps:/app/hailo-deps ...
-```
+## Contributing
 
-Now, the next step is running the conversion toolchain with the model you want to convert.
-Hailo's toolchain expects the input file to be a zipped file containing:
+If you're interested in contributing to the Hailo OAAX implementation, please check out the [CONTRIBUTING.md](CONTRIBUTING.md) file for more information on how to get started.
 
-- ONNX model
-- A folder containing a set of images to use for calibration
-- A configuration file in JSON format containing the following information:
-    - start_node_names: List of the names of the input nodes of the model
-    - end_node_names: List of the names of the output nodes of the model
-    - height: Height of the input images
-    - width: Width of the input images
-    - channels: Number of channels of the input images
-    - nchw: Whether the model expects the input images in NCHW format or not (NHWC format)
-    - means: List of the means to use for normalization
-    - stds: List of the standard deviations to use for normalization
+## License
 
-      For example:
-      ```json
-      {
-        "start_node_names": ["Conv1", "Conv3"],
-        "end_node_names": ["Softmax1", "Relu102"],
-        "height": 416,
-        "width": 416,
-        "channels": 3,
-        "nchw": true,
-        "means": [0.485, 0.456, 0.406],
-        "stds": [0.229, 0.224, 0.225]
-      }
-      ```
-
-The command to run the conversion toolchain is as follows:
-
-```bash
-docker run -v /path/to/hailo-deps:/app/hailo-deps \
-    -v /path/to/input:/app/input \
-    -v /path/to/output:/app/output \
-    onnx-to-hailo:latest /app/input/input.zip /app/output
-```
-
-### Using the runtime library
-
-To use the runtime library, you need to have the Hailo driver installed on the X86_64 machine.
-
-The Hailo runtime can be used just like the other OAAX runtimes. You can find various and diverse usage examples in
-the [examples](https://github.com/oaax-standard/examples) repository.
-
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for more details.
