@@ -1,0 +1,31 @@
+{
+    "start_node_names": [
+        "Conv_1"
+    ],
+    "end_node_names": [
+        "Transpose_34",
+        "Transpose_39",
+        "Transpose_56",
+        "Transpose_61",
+        "Transpose_74",
+        "Transpose_79",
+        "Transpose_88",
+        "Transpose_91"
+
+    ],
+    "height": 240,
+    "width": 320,
+    "channels": 3,
+    "nchw": false,
+    "means": [
+        127,
+        127,
+        127
+    ],
+    "stds": [
+        128,
+        128,
+        128
+    ],
+    "hw_arch": "hailo8"
+}

@@ -34,6 +34,7 @@ def calib_dataset(io_info: dict, calibration_images: list):
 
     grayscale = channels == 1
 
+    # Load calibration images
     if len(calibration_images) == 0:
         print('No calibration images provided, using default images.')
         images = glob(join(__here__, '**', '*.jpg'), recursive=True)
@@ -42,31 +43,30 @@ def calib_dataset(io_info: dict, calibration_images: list):
     images = [Image.open(img) for img in images]
     images = [img.convert('L' if grayscale else 'RGB') for img in images]
     images = [img.resize((width, height)) for img in images]
-    images = [np.array(img).astype('float32') for img in images]
+    images = [(np.array(img).astype('float32')-means)/stds for img in images]
     images = np.array(images)
     if grayscale:
         images = np.expand_dims(images, axis=-1)
     if nchw:
         images = images.transpose((0, 3, 1, 2))
-    images = (images - means) / stds
     return images
 
 
 def convert_to_hailo_onnx(input_path: str, output_path: str, input_json, calibration_images, logs):
-    logs.add_message('Starting conversion', {'Target Hardware': chosen_hw_arch})
-    runner = ClientRunner(hw_arch=chosen_hw_arch)
+    hw_arch = input_json.pop('hw_arch', chosen_hw_arch)
+    logs.add_message('Starting conversion', {'Target Hardware': hw_arch})
+    runner = ClientRunner(hw_arch=hw_arch)
     try:
         start_node_names = input_json.pop('start_node_names', [])
         end_node_names = input_json.pop('end_node_names', [])
-        start_node_names = start_node_names if start_node_names else None
-        end_node_names = end_node_names if end_node_names else None
-
         runner.translate_onnx_model(input_path, onnx_model_name,
                                     start_node_names=start_node_names,
                                     end_node_names=end_node_names,
                                     )
     except ParsingWithRecommendationException as e:
+        print('ParsingWithRecommendationException')
         raise Exception(e)
+
     logs.add_data(**{'Translation': 'Done'})
 
     runner.optimize(calib_dataset(input_json, calibration_images))

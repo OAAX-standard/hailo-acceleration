@@ -2,16 +2,19 @@ set -e
 
 cd "$(dirname "$0")" || exit 1
 
-rm -rf build 2&> /dev/null || true
-mkdir build
+# Read version from the version file
+VERSION_FILE="../VERSION"
+if [ ! -f "$VERSION_FILE" ]; then
+    echo "Version file not found: $VERSION_FILE"
+    exit 1
+fi
+VERSION=$(<"$VERSION_FILE")
+
+rm -rf artifacts 2&> /dev/null || true
+mkdir artifacts
 
 # Build the toolchain as a Docker image
-docker build -t onnx-to-hailo:latest .
+docker build -t oaax-hailo-toolchain:$VERSION .
 
 # Save the Docker image as a tarball
-docker save onnx-to-hailo:latest -o ./build/onnx-to-hailo-latest.tar
-
-# You can run the conversion toolchain using the following command:
-#docker load  -i ./build/onnx-to-hailo-latest.tar
-#docker run -v ./hailo-deps:/app/hailo-deps -v ./artifacts:/app2 onnx-to-hailo:latest /app2/model.zip /app2
-
+# docker save oaax-hailo-toolchain:$VERSION -o ./artifacts/oaax-hailo-toolchain.tar

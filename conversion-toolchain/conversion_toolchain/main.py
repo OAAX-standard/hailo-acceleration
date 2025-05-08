@@ -27,16 +27,18 @@ def cli():
         onnx_path, input_js, calibration_images = unzip_file(zip_path, join(output_dir, 'tmp'))
 
         onnx_filename = splitext(split(onnx_path)[1])[0]
-        new_onnx_path = join(output_dir, onnx_filename) + '.hailo8.onnx'
+        new_onnx_path = join(output_dir, onnx_filename) + '.hailo.onnx'
 
         # Convert to Hailo ONNX
-        logs.add_message('Converting ONNX to Hailo-ONNX', {'Input Path': onnx_path})
+        logs.add_message('Compiling ONNX to Hailo-ONNX', {'Input Path': onnx_path})
         convert_to_hailo_onnx(onnx_path, new_onnx_path, input_js, calibration_images, logs)
         # Create a valid mimetype
-        mime_type = 'application/x-onnx; device=hailo-8'
+        mime_type = 'application/x-onnx; device=hailo'
         logs.add_message('Successful Conversion', {'MIME type': mime_type,
                                                    'Output Path': new_onnx_path})
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         logs.add_message('Conversion Failed',
                          {'Human Error': "The ONNX model is not supported by the Hailo SDK.",
                           'Technical Error': str(e)})

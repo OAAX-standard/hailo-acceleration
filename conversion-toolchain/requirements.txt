@@ -1,4 +1,2 @@
 .
 lgg
-onnx
-onnxsim
