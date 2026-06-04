@@ -1,74 +1,96 @@
 # Hailo-8 Acceleration
 
-This folder contains the source code of the shared library and the Docker image that can be used by AI application developers to benefit from the acceleration offered by Hailo-8 chip on x86_64 machines.
+OAAX runtime and conversion toolchain for Hailo-8 AI accelerator chips. Provides a shared C library and a Docker-based conversion toolchain that together form a complete inference pipeline.
 
-## Artifacts
+## How the two components fit together
 
-- The OAAX runtime is available as a shared library that can be used by developers to load and run optimized models on a Hailo-8 AI Accelerator.
-- Whereas the conversion toolchain is available as a Docker image that can be used to convert ONNX models to ONNX models with a HailoOp node that contains the accelerated subgraph.
-
-
-## Usage
-
-### Using the conversion toolchain
-
-The Hailo conversion toolchain requires certain dependencies to function properly, namely:
-
-- hailo_dataflow_compiler-`<version>`-py3-none-linux_x86_64.whl
-- hailort-`<version>`-cp38-cp38-linux_x86_64.whl
-- hailort_`<version>`_amd64.deb
-
-Those dependencies need to be accessible to the toolchain to be able to convert models.
-The toolchain expects them to be available in the `/app/hailo-deps` directory of the container's filesystem when it's
-started.  
-That can be achieved by mounting a volume to the container when it's started, like so:
-
-```bash
-docker run -v /path/to/hailo-deps:/app/hailo-deps ...
+```
+ONNX model
+    │
+    ▼
+[Conversion Toolchain]  — Docker image; wraps the model in a HailoOp subgraph
+    │
+    ▼
+Hailo ONNX model
+    │
+    ▼
+[Runtime Library]  — C shared library; loads the model and runs async inference via oaax_runtime.h
+    │
+    ▼
+Inference results
 ```
 
-Now, the next step is running the conversion toolchain with the model you want to convert.
-Hailo's toolchain expects the input file to be a zipped file containing:
+## Repository structure
 
-- ONNX model
-- A folder containing a set of images to use for calibration
-- A configuration file in JSON format containing the following information:
-    - start_node_names: List of the names of the input nodes of the model
-    - end_node_names: List of the names of the output nodes of the model
-    - height: Height of the input images
-    - width: Width of the input images
-    - channels: Number of channels of the input images
-    - nchw: Whether the model expects the input images in NCHW format or not (NHWC format)
-    - means: List of the means to use for normalization
-    - stds: List of the standard deviations to use for normalization
+- [Conversion toolchain](conversion-toolchain): Docker-based model optimizer (ONNX → Hailo ONNX).
+- [Runtime library](runtime-library): C shared library implementing the OAAX v2 API (`oaax_runtime.h`).
 
-      For example:
-      ```json
-      {
-        "start_node_names": ["Conv1", "Conv3"],
-        "end_node_names": ["Softmax1", "Relu102"],
-        "height": 416,
-        "width": 416,
-        "channels": 3,
-        "nchw": true,
-        "means": [0.485, 0.456, 0.406],
-        "stds": [0.229, 0.224, 0.225]
-      }
-      ```
+## Building the runtime library
 
-The command to run the conversion toolchain is as follows:
+```bash
+bash runtime-library/build-runtime.sh
+```
+
+Output: `runtime-library/build/libRuntimeLibrary.so`
+
+The build defaults to `PLATFORM=X86_64` and `HAILORT_VERSION=4.20.0`. Edit `build-runtime.sh` or pass CMake flags directly to override.
+
+## Building the conversion toolchain
+
+The toolchain requires the following Hailo dependencies mounted at `/app/hailo-deps` inside the container:
+
+- `hailo_dataflow_compiler-<version>-py3-none-linux_x86_64.whl`
+- `hailort-<version>-cp38-cp38-linux_x86_64.whl`
+- `hailort_<version>_amd64.deb`
+
+```bash
+bash conversion-toolchain/build-toolchain.sh
+```
+
+### Running the toolchain
+
+The input must be a zip file containing: an ONNX model, a calibration image folder, and a `options.json` config:
+
+```json
+{
+  "start_node_names": ["Conv1"],
+  "end_node_names": ["Softmax1"],
+  "height": 416, "width": 416, "channels": 3,
+  "nchw": true,
+  "means": [0.485, 0.456, 0.406],
+  "stds":  [0.229, 0.224, 0.225]
+}
+```
 
 ```bash
 docker run -v /path/to/hailo-deps:/app/hailo-deps \
-    -v /path/to/input:/app/input \
-    -v /path/to/output:/app/output \
-    onnx-to-hailo:latest /app/input/input.zip /app/output
+           -v /path/to/input:/app/input \
+           -v /path/to/output:/app/output \
+           onnx-to-hailo:latest /app/input/input.zip /app/output
 ```
 
-### Using the runtime library
+## Runtime API (v2)
 
-To use the runtime library, you need to have the Hailo driver installed on the X86_64 machine.
+The public interface is `runtime-library/include/oaax_runtime.h`. The expected call sequence is:
 
-The Hailo runtime can be used just like the other OAAX runtimes. You can find various and diverse usage examples in
-the [examples](https://github.com/oaax-standard/examples) repository.
+```c
+runtime_init(config);
+runtime_load_models(n, model_configs);
 
+// async inference loop:
+runtime_enqueue_input(model_id, input_tensors);   // non-blocking
+runtime_retrieve_output(&model_id, &output, ms);  // timeout in ms
+
+runtime_cleanup();
+```
+
+Key types: `Config`, `ModelConfig`, `Tensors`, `TensorDescriptor`, `RuntimeStatus`.
+
+Config keys accepted by `runtime_init`: `"log_level"` (0–3), `"log_file"` (path).  
+Config keys accepted per model in `ModelConfig.config`: `"n_threads"` (default 4).
+
+On any non-`RUNTIME_STATUS_SUCCESS` return, call `runtime_get_error()` for a description.
+
+## Pre-built artifacts
+
+Pre-built runtimes and usage examples are available in the [OAAX contributions](https://github.com/oaax-standard/contributions) and [examples](https://github.com/oaax-standard/examples) repositories.

@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: sudo apt-get install -y clang-format
+
+      - name: Check C formatting
+        run: |
+          find runtime-library/src runtime-library/include \
+            -name '*.c' -o -name '*.h' | \
+            xargs clang-format --dry-run --Werror
+
+  build-toolchain:
+    name: Build conversion toolchain + error-handling tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install pytest onnx Pillow
+
+      - name: Build Docker image
+        run: bash conversion-toolchain/build-toolchain.sh
+
+      - name: Run error-handling integration tests (no hardware required)
+        run: python -m pytest tests/test_docker.py::TestErrorHandling -v
+
+      - name: Upload toolchain artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: oaax-hailo-toolchain
+          path: conversion-toolchain/artifacts/oaax-hailo-toolchain.tar
+          retention-days: 1
+
+      - name: Determine version
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            version=$(cat VERSION)
+          else
+            version="$GITHUB_HEAD_REF"
+          fi
+          echo "version=$version" >> "$GITHUB_ENV"
+
+      - name: Install s3cmd
+        run: sudo apt-get update -y && sudo apt-get install -y s3cmd
+
+      - name: Upload toolchain to S3
+        env:
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+        run: |
+          s3cmd_flags="--access_key=$S3_ACCESS_KEY --secret_key=$S3_SECRET_KEY --host=$S3_ENDPOINT_URL --host-bucket=%(bucket)s.$S3_ENDPOINT_URL --bucket-location=us-east-1 --ssl"
+          # shellcheck disable=SC2086
+          s3cmd $s3cmd_flags put \
+            "conversion-toolchain/artifacts/oaax-hailo-toolchain.tar" \
+            "s3://oaax/conversion-toolchain/${{ env.version }}/Hailo/oaax-hailo-toolchain.tar"
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            # shellcheck disable=SC2086
+            s3cmd $s3cmd_flags put \
+              "conversion-toolchain/artifacts/oaax-hailo-toolchain.tar" \
+              "s3://oaax/conversion-toolchain/latest/Hailo/oaax-hailo-toolchain.tar"
+          fi
+
+  build-and-test:
+    name: Build runtime + tests (${{ matrix.platform }})
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        platform: [X86_64, AARCH64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compilation toolchains
+        run: sudo bash scripts/setup-env.sh
+
+      - name: Build runtime (${{ matrix.platform }})
+        run: bash runtime-library/build-runtime.sh ${{ matrix.platform }}
+
+      - name: Build C++ tests (X86_64 only)
+        if: matrix.platform == 'X86_64'
+        run: bash tests/runtime/build-tests.sh
+
+      - name: Run API-only tests (no hardware required)
+        if: matrix.platform == 'X86_64'
+        working-directory: tests/runtime/build
+        run: |
+          ./simple_test
+          ./lifecycle_test
+
+      - name: Upload runtime artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-library-${{ matrix.platform }}
+          path: runtime-library/artifacts/runtime-library-${{ matrix.platform }}.tar.gz
+          retention-days: 1
+
+      - name: Determine version
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            version=$(cat VERSION)
+          else
+            version="$GITHUB_HEAD_REF"
+          fi
+          echo "version=$version" >> "$GITHUB_ENV"
+
+      - name: Install s3cmd
+        run: sudo apt-get update -y && sudo apt-get install -y s3cmd
+
+      - name: Upload runtime to S3 (${{ matrix.platform }})
+        env:
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+        run: |
+          arch=$([ "${{ matrix.platform }}" = "X86_64" ] && echo "x86_64" || echo "aarch64")
+          s3cmd_flags="--access_key=$S3_ACCESS_KEY --secret_key=$S3_SECRET_KEY --host=$S3_ENDPOINT_URL --host-bucket=%(bucket)s.$S3_ENDPOINT_URL --bucket-location=us-east-1 --ssl"
+          # shellcheck disable=SC2086
+          s3cmd $s3cmd_flags put \
+            "runtime-library/artifacts/runtime-library-${{ matrix.platform }}.tar.gz" \
+            "s3://oaax/runtimes/${{ env.version }}/Hailo/${arch}/Ubuntu/library.tar.gz"
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            # shellcheck disable=SC2086
+            s3cmd $s3cmd_flags put \
+              "runtime-library/artifacts/runtime-library-${{ matrix.platform }}.tar.gz" \
+              "s3://oaax/runtimes/latest/Hailo/${arch}/Ubuntu/library.tar.gz"
+          fi
