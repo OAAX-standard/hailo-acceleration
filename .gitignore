@@ -21,3 +21,10 @@ build
 # Build artifacts
 *.tar.gz
 *.tar
+
+# Python
+__pycache__/
+*.pyc
+
+# Test build output
+tests/runtime/build/
