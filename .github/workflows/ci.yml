@@ -75,12 +75,12 @@ jobs:
           # shellcheck disable=SC2086
           s3cmd $s3cmd_flags put \
             "conversion-toolchain/artifacts/oaax-hailo-toolchain.tar" \
-            "s3://oaax/conversion-toolchain/${{ env.version }}/Hailo/oaax-hailo-toolchain.tar"
+            "s3://oaax/conversion-toolchain/${{ env.version }}/HAILO/oaax-hailo-toolchain.tar"
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
             # shellcheck disable=SC2086
             s3cmd $s3cmd_flags put \
               "conversion-toolchain/artifacts/oaax-hailo-toolchain.tar" \
-              "s3://oaax/conversion-toolchain/latest/Hailo/oaax-hailo-toolchain.tar"
+              "s3://oaax/conversion-toolchain/latest/HAILO/oaax-hailo-toolchain.tar"
           fi
 
   build-and-test:
@@ -139,10 +139,10 @@ jobs:
           # shellcheck disable=SC2086
           s3cmd $s3cmd_flags put \
             "runtime-library/artifacts/runtime-library-${{ matrix.platform }}.tar.gz" \
-            "s3://oaax/runtimes/${{ env.version }}/Hailo/${arch}/Ubuntu/library.tar.gz"
+            "s3://oaax/runtimes/${{ env.version }}/HAILO/${arch}/Ubuntu/library.tar.gz"
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
             # shellcheck disable=SC2086
             s3cmd $s3cmd_flags put \
               "runtime-library/artifacts/runtime-library-${{ matrix.platform }}.tar.gz" \
-              "s3://oaax/runtimes/latest/Hailo/${arch}/Ubuntu/library.tar.gz"
+              "s3://oaax/runtimes/latest/HAILO/${arch}/Ubuntu/library.tar.gz"
           fi
