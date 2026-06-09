@@ -11,3 +11,20 @@ CTestTestfile.cmake
 _deps
 CMakeUserPresets.json
 build
+
+# Model files — never commit large binaries
+*.onnx
+*.pt
+*.pth
+*.hef
+
+# Build artifacts
+*.tar.gz
+*.tar
+
+# Python
+__pycache__/
+*.pyc
+
+# Test build output
+tests/runtime/build/

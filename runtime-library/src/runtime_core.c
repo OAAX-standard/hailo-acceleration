@@ -1,547 +1,703 @@
-#include "runtime_core.h"
-#include "logger.h"
-#include "queue.h"
-#include "runtime_utils.h"
-#include "threads.h"
 #include <errno.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
-#include <string.h>// For strerror
-#include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "logger.h"
+#include "oaax_runtime.h"
+#include "queue.h"
+#include "runtime_utils.h"
 
 #ifndef ONNXRUNTIME_API_VERSION
 #define ONNXRUNTIME_API_VERSION 15
 #endif
 
-#define QUEUE_CAPACITY 100// The maximum number of items that a queue can hold
-#define THREAD_SAFE true
+#define QUEUE_CAPACITY 100
+#define WORKER_POLL_MS 5
+#define MAX_MODELS 8
+#define RUNTIME_VERSION "2.0.0"
+#define RUNTIME_NAME "OAAX Hailo Runtime"
 
-#define RUNTIME_ORT_CORE_EXEC( return_code, error ) ( {int32_t code = return_code; if (code != 0) {error = code; goto cleanup;} } )
+/* ── Shared globals (also extern'd by runtime_utils.c and queue.c) ─────── */
 
-#define INIT_LOGGER                                                                   \
-    if ( logger == NULL ) {                                                           \
-        logger = create_logger( runtime_name(), "runtime.log", log_level, LOG_INFO ); \
-        if ( logger == NULL ) {                                                       \
-            printf( "Error: RUNTIME - Failed to create logger" );                     \
-            return 1;                                                                 \
-        }                                                                             \
-    }
-#define READ_ENV_INT( name, var )             \
-    {                                         \
-        const char *env = getenv( name );     \
-        if ( env != NULL ) var = atoi( env ); \
-    }
-
-static int n_duplicates = 1;
-static int n_threads_per_duplicate = 4;
-static LogLevel log_level = LOG_INFO;
-
-const OrtApi *api;
-
-OrtSession **sessions = NULL;
-OrtRunOptions **run_options = NULL;
-OrtAllocator **allocators = NULL;
-OrtMemoryInfo **memory_infos = NULL;
-OrtEnv **envs = NULL;
-OrtSessionOptions **session_options = NULL;
-
-// Queues
-static Queue *input_queue = NULL, *output_queue = NULL;
-
-// Logger
+const OrtApi *api = NULL;
 Logger *logger = NULL;
 
-// Running thread
-int *session_ids = NULL;
-pthread_t *threads = NULL;
-atomic_int stop_thread = 0;
+/* ── Internal types ─────────────────────────────────────────────────────── */
 
-// Prototype functions
-static void *inference_loop( void *arg );
-static int runtime_inference_execution( int session_id, tensors_struct *input_tensors, tensors_struct *output_tensors );
+typedef struct {
+  int model_id;
+  Tensors *tensors;
+} OutputItem;
 
-int runtime_initialization_with_args( int length, const char **keys, const void **values ) {
-    // Initialize the logger
-    READ_ENV_INT( "RUNTIME_LOG_LEVEL", log_level );
-    INIT_LOGGER
+typedef struct ModelState ModelState;
 
-    log_info( logger, "Initializing ONNX Runtime with arguments" );
-    for ( int i = 0; i < length; i++ ) {
-        if ( strcmp( keys[i], "n_duplicates" ) == 0 ) {
-            n_duplicates = *(int *) values[i];
-        } else if ( strcmp( keys[i], "n_threads_per_duplicate" ) == 0 ) {
-            n_threads_per_duplicate = *(int *) values[i];
-        } else {
-            log_warning( logger, "Unknown key '%s'", keys[i] );
-        }
-    }
-    return runtime_initialization();
+typedef struct {
+  ModelState *model;
+  OrtSession *session;
+  int replica_id;
+} WorkerArg;
+
+struct ModelState {
+  int model_id;
+  int active;
+  int n_replicas;
+  OrtSession **sessions;  /* array of n_replicas */
+  WorkerArg *worker_args; /* array of n_replicas */
+  pthread_t *threads;     /* array of n_replicas */
+  OrtRunOptions *run_options;
+  OrtAllocator *allocator;
+  OrtMemoryInfo *memory_info;
+  OrtEnv *env;
+  OrtSessionOptions *session_options;
+  Queue *input_queue;
+  atomic_int stop;
+  char **input_names;
+  int num_inputs;
+  char **output_names;
+  int num_outputs;
+};
+
+/* ── Module state ───────────────────────────────────────────────────────── */
+
+static int g_initialized = 0;
+static int g_models_loaded = 0;
+static char g_last_error[1024] = {0};
+static char g_info_json[512] = {0};
+static LogLevel g_log_level = LOG_INFO;
+static char g_log_file[256] = "runtime.log";
+static int g_n_threads = 4;
+static int g_n_replicas = 1;
+
+static ModelState g_models[MAX_MODELS];
+static int g_num_models = 0;
+static Queue *g_output_queue = NULL;
+
+/* ── Helpers ────────────────────────────────────────────────────────────── */
+
+static void set_error(const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(g_last_error, sizeof(g_last_error), fmt, args);
+  va_end(args);
+  if (logger)
+    log_error(logger, "%s", g_last_error);
 }
 
-int runtime_initialization() {
-    // Initialize the logger
-    READ_ENV_INT( "RUNTIME_LOG_LEVEL", log_level );
-    INIT_LOGGER
-
-    log_info( logger, "Initializing OnnxRuntime" );
-
-    // get the correct api version
-    api = OrtGetApiBase()->GetApi( ONNXRUNTIME_API_VERSION );
-
-    // Allocate memory for the objects
-    session_ids = (int *) malloc( sizeof( int ) * n_duplicates );
-    run_options = (OrtRunOptions **) malloc( sizeof( OrtRunOptions * ) * n_duplicates );
-    allocators = (OrtAllocator **) malloc( sizeof( OrtAllocator * ) * n_duplicates );
-    memory_infos = (OrtMemoryInfo **) malloc( sizeof( OrtMemoryInfo * ) * n_duplicates );
-    envs = (OrtEnv **) malloc( sizeof( OrtEnv * ) * n_duplicates );
-    session_options = (OrtSessionOptions **) malloc( sizeof( OrtSessionOptions * ) * n_duplicates );
-    sessions = (OrtSession **) malloc( sizeof( OrtSession * ) * n_duplicates );
-    threads = (pthread_t *) malloc( sizeof( pthread_t ) * n_duplicates );
-
-    if ( !session_ids || !run_options || !allocators || !memory_infos || !envs || !session_options || !sessions || !threads ) {
-        log_error( logger, "Memory allocation failed during initialization" );
-        return 1;
-    }
-
-    for ( int i = 0; i < n_duplicates; i++ ) {
-        // create the environment
-        if ( runtime_core_process_status( api->CreateEnv( ORT_LOGGING_LEVEL_FATAL, "ORT_LOGGER", &envs[i] ) ) != 0 ) {
-            log_error( logger, "Failed to create ORT environment" );
-            return 1;
-        }
-
-        // Create session options
-        if ( runtime_core_process_status( api->CreateSessionOptions( &session_options[i] ) ) != 0 ) {
-            log_error( logger, "Failed to create session options" );
-            return 1;
-        }
-
-        // choices: ORT_DISABLE_ALL, ORT_ENABLE_BASIC, ORT_ENABLE_EXTENDED, ORT_ENABLE_ALL
-        runtime_core_process_status( api->SetSessionGraphOptimizationLevel( session_options[i], ORT_ENABLE_ALL ) );
-        runtime_core_process_status( api->SetIntraOpNumThreads( session_options[i], n_threads_per_duplicate ) );
-        runtime_core_process_status( api->SetInterOpNumThreads( session_options[i], 1 ) );
-        runtime_core_process_status( api->SetSessionExecutionMode( session_options[i], ORT_SEQUENTIAL ) );
-        runtime_core_process_status( api->SessionOptionsAppendExecutionProvider_Hailo( session_options[i], true ) );
-
-        char **providers = NULL;
-        int number_providers = 0;
-        runtime_core_process_status( api->GetAvailableProviders( &providers, &number_providers ) );
-        for ( int j = 0; j < number_providers; ++j )
-            log_info( logger, "Provider id: %i - name: %s", j, providers[j] );
-        runtime_core_process_status( api->ReleaseAvailableProviders( providers, number_providers ) );
-
-        // create run options
-        if ( runtime_core_process_status( api->CreateRunOptions( &run_options[i] ) ) != 0 ) {
-            log_error( logger, "Failed to create run options" );
-            return 1;
-        }
-    }
-
-    // Initialize the queues
-    input_queue = new_queue( QUEUE_CAPACITY, THREAD_SAFE );
-    output_queue = new_queue( QUEUE_CAPACITY, THREAD_SAFE );
-
-    if ( !input_queue || !output_queue ) {
-        log_error( logger, "Failed to create queues" );
-        return 1;
-    }
-
-    log_debug( logger, "n_duplicates: %d - n_threads_per_duplicate: %d - log_level: %d",
-               n_duplicates, n_threads_per_duplicate, log_level );
-
-    return 0;
+static int config_get_int(const Config *cfg, const char *key, int fallback) {
+  for (int i = 0; i < cfg->length; i++) {
+    if (cfg->keys[i] && strcmp(cfg->keys[i], key) == 0 && cfg->values[i])
+      return atoi(cfg->values[i]);
+  }
+  return fallback;
 }
 
-int runtime_model_loading( const char *file_path ) {
-    log_info( logger, "Reading ONNX file from '%s' ...", file_path );
-
-    // Create a session
-    for ( int i = 0; i < n_duplicates; i++ ) {
-        session_ids[i] = i;
-        if ( runtime_core_process_status( api->CreateSession( envs[i], file_path, session_options[i], &sessions[i] ) ) != 0 ) {
-            log_error( logger, "Failed to create session" );
-            return 1;
-        }
-
-        // create allocator
-        if ( runtime_core_process_status( api->CreateCpuMemoryInfo( OrtArenaAllocator, OrtMemTypeDefault, &memory_infos[i] ) ) != 0 ) {
-            log_error( logger, "Failed to create memory info" );
-            return 1;
-        }
-
-        if ( runtime_core_process_status( api->CreateAllocator( sessions[i], memory_infos[i], &allocators[i] ) ) != 0 ) {
-            log_error( logger, "Failed to create allocator" );
-            return 1;
-        }
-    }
-
-    stop_thread = 0;
-
-    // Start the inference loops
-    for ( int i = 0; i < n_duplicates; i++ ) {
-        if ( pthread_create( &threads[i], NULL, inference_loop, &session_ids[i] ) != 0 ) {
-            log_error( logger, "Failed to create inference thread" );
-            return 1;
-        }
-    }
-
-    return 0;
+static const char *config_get_str(const Config *cfg, const char *key,
+                                  const char *fallback) {
+  for (int i = 0; i < cfg->length; i++) {
+    if (cfg->keys[i] && strcmp(cfg->keys[i], key) == 0 && cfg->values[i])
+      return cfg->values[i];
+  }
+  return fallback;
 }
 
-static void *inference_loop( void *arg ) {
-    int session_id = *( (int *) arg );
-    log_info( logger, "Starting the inference thread for session %d.", session_id );
-    int exit_code = 0;
-    while ( 1 ) {
-        tensors_struct *input_tensors = dequeue( input_queue, 200 );// timeout after 200ms to check if the thread should stop
-        if ( input_tensors != NULL ) {
+/* ── Output builder ─────────────────────────────────────────────────────── */
 
-            log_debug( logger, "Running inference for session %d.", session_id );
-            tensors_struct *output_tensors = (tensors_struct *) malloc( sizeof( tensors_struct ) );
-            if ( output_tensors == NULL ) {
-                log_warning( logger, "Memory allocation failed for output_tensors" );
-                free_tensors_struct( input_tensors );
-                continue;
-            }
-            memset( output_tensors, 0, sizeof( tensors_struct ) );// Initialize to zero
-
-            exit_code = runtime_inference_execution( session_id, input_tensors, output_tensors );
-            if ( exit_code != 0 ) {
-                log_warning( logger, "Inference execution failed with code %d", exit_code );
-                free_tensors_struct( output_tensors );
-                output_tensors = NULL;
-            }
-
-            if ( output_tensors != NULL && exit_code == 0 ) {
-                log_debug( logger, "Enqueueing output tensors." );
-                if ( enqueue( output_queue, output_tensors ) != 0 ) {
-                    log_warning( logger, "Failed to enqueue output tensors" );
-                    free_tensors_struct( output_tensors );
-                }
-            } else {
-                log_warning( logger, "No output tensors to enqueue." );
-            }
-
-            free_tensors_struct( input_tensors );
-        }
-        // Check if the thread should stop
-        if ( atomic_load( &stop_thread ) ) {
-            log_info( logger, "Stopping inference thread: %i", session_id );
-            break;
-        }
-    }
+static Tensors *build_output(ModelState *m, OrtValue **output_values,
+                             int request_id) {
+  Tensors *out = (Tensors *)malloc(sizeof(Tensors));
+  if (!out)
     return NULL;
+
+  out->id = request_id;
+  out->num_tensors = m->num_outputs;
+  out->tensors =
+      (TensorDescriptor *)calloc(m->num_outputs, sizeof(TensorDescriptor));
+  if (!out->tensors) {
+    free(out);
+    return NULL;
+  }
+
+  for (int i = 0; i < m->num_outputs; i++) {
+    OrtTensorTypeAndShapeInfo *shape_info = NULL;
+    if (process_ort_status(
+            api->GetTensorTypeAndShape(output_values[i], &shape_info)) != 0) {
+      free_tensors(out);
+      return NULL;
+    }
+
+    ONNXTensorElementDataType ort_type =
+        ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+    api->GetTensorElementType(shape_info, &ort_type);
+
+    size_t rank = 0;
+    api->GetDimensionsCount(shape_info, &rank);
+
+    int64_t *dims = (int64_t *)malloc(rank * sizeof(int64_t));
+    if (!dims) {
+      api->ReleaseTensorTypeAndShapeInfo(shape_info);
+      free_tensors(out);
+      return NULL;
+    }
+    api->GetDimensions(shape_info, dims, rank);
+
+    size_t elem_count = 0;
+    api->GetTensorShapeElementCount(shape_info, &elem_count);
+    api->ReleaseTensorTypeAndShapeInfo(shape_info);
+
+    TensorElementType elem_type = ort_type_to_tensor_element_type(ort_type);
+    size_t elem_size = get_element_byte_size(elem_type);
+    size_t total_bytes = elem_count * elem_size;
+
+    out->tensors[i].name = strdup(m->output_names[i]);
+    out->tensors[i].data_type = elem_type;
+    out->tensors[i].rank = (int)rank;
+    out->tensors[i].shape = (int *)malloc(rank * sizeof(int));
+    out->tensors[i].data_size = total_bytes;
+    out->tensors[i].data = malloc(total_bytes);
+
+    if (!out->tensors[i].name || !out->tensors[i].shape ||
+        (total_bytes > 0 && !out->tensors[i].data)) {
+      free(dims);
+      free_tensors(out);
+      return NULL;
+    }
+
+    for (size_t j = 0; j < rank; j++)
+      out->tensors[i].shape[j] = (int)dims[j];
+    free(dims);
+
+    if (total_bytes > 0) {
+      void *raw = NULL;
+      api->GetTensorMutableData(output_values[i], &raw);
+      memcpy(out->tensors[i].data, raw, total_bytes);
+    }
+  }
+
+  return out;
 }
 
-int send_input( tensors_struct *input_tensors ) {
-    log_debug( logger, "Sending input tensors to the queue." );
-    if ( enqueue( input_queue, input_tensors ) != 0 ) {
-        log_error( logger, "Failed to enqueue input tensors" );
-        return 1;
+/* ── Inference execution ────────────────────────────────────────────────── */
+
+static Tensors *run_inference(ModelState *m, OrtSession *session,
+                              const Tensors *input) {
+  int n_in = input->num_tensors;
+  OrtValue **input_values = (OrtValue **)calloc(n_in, sizeof(OrtValue *));
+  OrtValue **output_values =
+      (OrtValue **)calloc(m->num_outputs, sizeof(OrtValue *));
+  Tensors *result = NULL;
+  int64_t *shape_buf = NULL;
+
+  if (!input_values || !output_values) {
+    set_error("[model %d] OOM in run_inference", m->model_id);
+    goto cleanup;
+  }
+
+  for (int i = 0; i < n_in; i++) {
+    TensorDescriptor *td = &input->tensors[i];
+    ONNXTensorElementDataType ort_type =
+        tensor_element_type_to_ort_type(td->data_type);
+
+    shape_buf = (int64_t *)malloc(td->rank * sizeof(int64_t));
+    if (!shape_buf) {
+      set_error("[model %d] OOM allocating shape buffer", m->model_id);
+      goto cleanup;
     }
-    return 0;
-}
+    for (int j = 0; j < td->rank; j++)
+      shape_buf[j] = (int64_t)td->shape[j];
 
-int receive_output( tensors_struct **output_tensors ) {
-    log_debug( logger, "Receiving output tensors from the queue." );
-    tensors_struct *output = dequeue( output_queue, 200 );
-    if ( output == NULL ) {
-        log_debug( logger, "There's no output tensors available." );
-        *output_tensors = NULL;
-        return 1;
+    if (process_ort_status(api->CreateTensorWithDataAsOrtValue(
+            m->memory_info, td->data, td->data_size, shape_buf,
+            (size_t)td->rank, ort_type, &input_values[i])) != 0) {
+      free(shape_buf);
+      shape_buf = NULL;
+      goto cleanup;
     }
+    free(shape_buf);
+    shape_buf = NULL;
+  }
 
-    *output_tensors = output;
-    return 0;
-}
+  if (process_ort_status(api->Run(session, m->run_options,
+                                  (const char *const *)m->input_names,
+                                  (const OrtValue *const *)input_values, n_in,
+                                  (const char *const *)m->output_names,
+                                  m->num_outputs, output_values)) != 0) {
+    set_error("[model %d] Inference run failed", m->model_id);
+    goto cleanup;
+  }
 
-static int runtime_inference_execution( int session_id, tensors_struct *input_tensors, tensors_struct *output_tensors ) {
-    int error = 0;
-    int number_inputs = (int) input_tensors->num_tensors;
-    uint8_t **inputs = (uint8_t **) input_tensors->data;
-    int64_t **input_shapes = (int64_t **) input_tensors->shapes;
-    size_t *input_ranks = (size_t *) input_tensors->ranks;
-    size_t *input_sizes = NULL;
-    char **input_names = NULL;
-    int *input_dtypes = NULL;
-    char **output_names = NULL;
-    int *output_dtypes = NULL;
-    OrtValue **input_values = NULL;
-    OrtValue **output_values = NULL;
-    void **outputs = NULL;
-    int number_outputs = 0;
-    size_t **output_shapes = NULL;
-    size_t *output_ranks = NULL;
-
-    input_sizes = (size_t *) malloc( sizeof( size_t ) * number_inputs );
-    if ( input_sizes == NULL ) {
-        log_error( logger, "Memory allocation failed for input_sizes" );
-        error = 1;
-        goto cleanup;
-    }
-
-    for ( int i = 0; i < number_inputs; i++ ) {
-        input_sizes[i] = 1;
-        for ( size_t j = 0; j < input_ranks[i]; j++ )
-            input_sizes[i] *= input_shapes[i][j];
-    }
-
-    log_debug( logger, "Reading input names from ONNX file" );
-    input_names = runtime_core_get_input_names( sessions[session_id], allocators[session_id], &number_inputs, &input_dtypes );
-    if ( input_names == NULL || input_dtypes == NULL ) {
-        log_error( logger, "Failed to get input names or data types" );
-        error = 1;
-        goto cleanup;
-    }
-
-    // Make sure that the number of input tensors is the same as the one passed to the runtime
-    if ( number_inputs != (int) input_tensors->num_tensors ) {
-        log_error( logger, "The number of input tensors does not match the number of input tensors in the model" );
-        log_error( logger, "Expected: %d, Got: %zu", number_inputs, input_tensors->num_tensors );
-        error = 1;
-        goto cleanup;
-    }
-
-    log_debug( logger, "Reading output names from ONNX file" );
-    output_names = runtime_core_get_output_names( sessions[session_id], allocators[session_id], &number_outputs, &output_dtypes );
-    if ( output_names == NULL || output_dtypes == NULL ) {
-        log_error( logger, "Failed to get output names or data types" );
-        error = 1;
-        goto cleanup;
-    }
-
-    input_values = (OrtValue **) malloc( sizeof( OrtValue * ) * number_inputs );
-    if ( input_values == NULL ) {
-        log_error( logger, "Memory allocation failed for input_values" );
-        error = 1;
-        goto cleanup;
-    }
-    memset( input_values, 0, sizeof( OrtValue * ) * number_inputs );
-
-    output_values = (OrtValue **) malloc( sizeof( OrtValue * ) * number_outputs );
-    if ( output_values == NULL ) {
-        log_error( logger, "Memory allocation failed for output_values" );
-        error = 1;
-        goto cleanup;
-    }
-    memset( output_values, 0, sizeof( OrtValue * ) * number_outputs );
-
-    for ( int i = 0; i < number_inputs; ++i ) {
-        RUNTIME_ORT_CORE_EXEC( runtime_core_process_status(
-                                       api->CreateTensorWithDataAsOrtValue( memory_infos[session_id],
-                                                                            inputs[i],
-                                                                            input_sizes[i] * runtime_util_get_sizeof_onnx_type( input_dtypes[i] ),
-                                                                            input_shapes[i],
-                                                                            input_ranks[i],
-                                                                            input_dtypes[i],
-                                                                            &input_values[i] ) ),
-                               error );
-    }
-
-    log_debug( logger, "Inference run started" );
-    RUNTIME_ORT_CORE_EXEC( runtime_core_process_status( api->Run( sessions[session_id],
-                                                                  run_options[session_id],
-                                                                  (const char *const *) input_names,
-                                                                  (const OrtValue *const *) input_values,
-                                                                  number_inputs,
-                                                                  (const char *const *) output_names,
-                                                                  number_outputs,
-                                                                  output_values ) ),
-                           error );
-
-    log_debug( logger, "Inference run completed" );
-    // Clean up input values
-    for ( int i = 0; i < number_inputs; i++ ) {
-        if ( input_names[i] ) free( input_names[i] );
-        if ( input_values[i] ) api->ReleaseValue( input_values[i] );
-    }
-    free( input_names );
-    free( input_dtypes );
-    free( input_sizes );
-    free( input_values );
-    input_names = NULL;
-    input_dtypes = NULL;
-    input_sizes = NULL;
-    input_values = NULL;
-
-    outputs = (void **) malloc( sizeof( void * ) * number_outputs );
-    if ( outputs == NULL ) {
-        log_error( logger, "Memory allocation failed for outputs" );
-        error = 1;
-        goto cleanup;
-    }
-    memset( outputs, 0, sizeof( void * ) * number_outputs );
-
-    output_shapes = (size_t **) malloc( sizeof( size_t * ) * number_outputs );
-    if ( output_shapes == NULL ) {
-        log_error( logger, "Memory allocation failed for output_shapes" );
-        error = 1;
-        goto cleanup;
-    }
-    memset( output_shapes, 0, sizeof( size_t * ) * number_outputs );
-
-    output_ranks = (size_t *) malloc( sizeof( size_t ) * number_outputs );
-    if ( output_ranks == NULL ) {
-        log_error( logger, "Memory allocation failed for output_ranks" );
-        error = 1;
-        goto cleanup;
-    }
-
-    for ( int i = 0; i < number_outputs; ++i ) {
-        OrtTensorTypeAndShapeInfo *type_shape = NULL;
-
-        // get shape information
-        RUNTIME_ORT_CORE_EXEC( runtime_core_process_status( api->GetTensorTypeAndShape( output_values[i], &type_shape ) ), error );
-
-        // get output size
-        size_t size = 0;
-        RUNTIME_ORT_CORE_EXEC( runtime_core_process_status( api->GetTensorShapeElementCount( type_shape, &size ) ), error );
-
-        // get output rank
-        size_t rank = 0;
-        RUNTIME_ORT_CORE_EXEC( runtime_core_process_status( api->GetDimensionsCount( type_shape, &rank ) ), error );
-        output_ranks[i] = rank;
-
-        // get output shape
-        output_shapes[i] = (size_t *) malloc( sizeof( int64_t ) * rank );
-        if ( output_shapes[i] == NULL ) {
-            log_error( logger, "Memory allocation failed for output_shapes[%d]", i );
-            api->ReleaseTensorTypeAndShapeInfo( type_shape );
-            error = 1;
-            goto cleanup;
-        }
-        RUNTIME_ORT_CORE_EXEC( runtime_core_process_status( api->GetDimensions( type_shape, (int64_t *) output_shapes[i], rank ) ), error );
-
-        // get output value
-        size_t output_bytes = size * runtime_util_get_sizeof_onnx_type( output_dtypes[i] );
-        outputs[i] = malloc( output_bytes );
-        if ( outputs[i] == NULL ) {
-            log_error( logger, "Memory allocation failed for outputs[%d]", i );
-            api->ReleaseTensorTypeAndShapeInfo( type_shape );
-            error = 1;
-            goto cleanup;
-        }
-        void *tmp = NULL;
-        RUNTIME_ORT_CORE_EXEC( runtime_core_process_status( api->GetTensorMutableData( output_values[i], &tmp ) ), error );
-        memcpy( outputs[i], tmp, output_bytes );
-
-        api->ReleaseTensorTypeAndShapeInfo( type_shape );
-        api->ReleaseValue( output_values[i] );
-    }
-    free( output_values );
-    output_values = NULL;
-
-    // Assign the output tensors to the output_tensors pointer
-    output_tensors->num_tensors = number_outputs;
-    output_tensors->ranks = output_ranks;
-    output_tensors->shapes = output_shapes;
-    output_tensors->data_types = (tensor_data_type *) output_dtypes;
-    output_tensors->data = outputs;
-    output_tensors->names = output_names;
-
-    // Set pointers to NULL to avoid double free in cleanup
-    output_ranks = NULL;
-    output_shapes = NULL;
-    outputs = NULL;
-    output_dtypes = NULL;
-    output_names = NULL;
+  result = build_output(m, output_values, input->id);
+  if (!result)
+    set_error("[model %d] build_output failed (OOM)", m->model_id);
 
 cleanup:
-    // Clean up in case of errors
-    if ( input_names ) {
-        for ( int i = 0; i < number_inputs; i++ ) {
-            if ( input_names[i] ) free( input_names[i] );
-        }
-        free( input_names );
-    }
-    if ( input_dtypes ) free( input_dtypes );
-    if ( input_sizes ) free( input_sizes );
-    if ( input_values ) {
-        for ( int i = 0; i < number_inputs; i++ ) {
-            if ( input_values[i] ) api->ReleaseValue( input_values[i] );
-        }
-        free( input_values );
-    }
-    if ( output_names ) {
-        for ( int i = 0; i < number_outputs; i++ ) {
-            if ( output_names[i] ) free( output_names[i] );
-        }
-        free( output_names );
-    }
-    if ( output_dtypes ) free( output_dtypes );
-    if ( output_values ) {
-        for ( int i = 0; i < number_outputs; i++ ) {
-            if ( output_values[i] ) {
-                api->ReleaseValue( output_values[i] );
-            }
-        }
-        free( output_values );
-    }
-    if ( output_shapes ) {
-        for ( int i = 0; i < number_outputs; i++ ) {
-            if ( output_shapes[i] ) free( output_shapes[i] );
-        }
-        free( output_shapes );
-    }
-    if ( output_ranks ) free( output_ranks );
-    if ( outputs ) {
-        for ( int i = 0; i < number_outputs; i++ ) {
-            if ( outputs[i] ) free( outputs[i] );
-        }
-        free( outputs );
-    }
-    return error;
+  if (input_values) {
+    for (int i = 0; i < n_in; i++)
+      if (input_values[i])
+        api->ReleaseValue(input_values[i]);
+    free(input_values);
+  }
+  if (output_values) {
+    for (int i = 0; i < m->num_outputs; i++)
+      if (output_values[i])
+        api->ReleaseValue(output_values[i]);
+    free(output_values);
+  }
+  free(shape_buf);
+  return result;
 }
 
-int runtime_destruction() {
-    log_info( logger, "Releasing all objects created by the runtime" );
-    // Stop the thread
-    atomic_store( &stop_thread, 1 );
+/* ── Worker thread ──────────────────────────────────────────────────────── */
 
-    // Wait for all threads to finish
-    for ( int i = 0; i < n_duplicates; i++ ) {
-        pthread_join( threads[i], NULL );
+static void *worker_loop(void *arg) {
+  WorkerArg *wa = (WorkerArg *)arg;
+  ModelState *m = wa->model;
+  OrtSession *session = wa->session;
+
+  log_info(logger, "[model %d] Worker thread %d started", m->model_id,
+           wa->replica_id);
+
+  while (1) {
+    Tensors *input = (Tensors *)dequeue(m->input_queue, WORKER_POLL_MS);
+
+    if (atomic_load(&m->stop)) {
+      if (input)
+        free_tensors(input);
+      break;
     }
 
-    // Clean up the queues
-    free_queue( input_queue );
-    free_queue( output_queue );
+    if (input == NULL)
+      continue;
 
-    // Clean up the session
-    for ( int i = 0; i < n_duplicates; i++ ) {
-        api->ReleaseRunOptions( run_options[i] );
-        api->ReleaseSession( sessions[i] );
-        api->ReleaseMemoryInfo( memory_infos[i] );
-        api->ReleaseAllocator( allocators[i] );
-        api->ReleaseEnv( envs[i] );
-        api->ReleaseSessionOptions( session_options[i] );
-    }
-    free( threads );
-    free( allocators );
-    free( memory_infos );
-    free( envs );
-    free( sessions );
-    free( run_options );
-    free( session_ids );
-    free( session_options );
+    log_debug(logger, "[model %d] Replica %d running inference (request id=%d)",
+              m->model_id, wa->replica_id, input->id);
+    Tensors *output = run_inference(m, session, input);
+    free_tensors(input);
 
-    // destroy logger
-    if ( logger != NULL ) {
-        close_logger( logger );
-        logger = NULL;
+    if (!output) {
+      log_warning(logger,
+                  "[model %d] Replica %d inference failed, dropping result",
+                  m->model_id, wa->replica_id);
+      continue;
     }
 
-    return 0;
+    OutputItem *item = (OutputItem *)malloc(sizeof(OutputItem));
+    if (!item) {
+      free_tensors(output);
+      log_warning(logger, "[model %d] OOM for OutputItem, dropping result",
+                  m->model_id);
+      continue;
+    }
+    item->model_id = m->model_id;
+    item->tensors = output;
+
+    if (enqueue(g_output_queue, item) != 0) {
+      log_warning(logger, "[model %d] Output queue full, dropping result",
+                  m->model_id);
+      free_tensors(output);
+      free(item);
+    }
+  }
+
+  log_info(logger, "[model %d] Worker thread %d stopped", m->model_id,
+           wa->replica_id);
+  return NULL;
 }
 
-const char *runtime_error_message() {
-    return "Check the stdout and log files for the error message.";
+/* ── Per-model load/unload ──────────────────────────────────────────────── */
+
+static int load_one_model(int idx, const ModelConfig *mc,
+                          int threads_per_replica, int n_replicas) {
+  ModelState *m = &g_models[idx];
+  memset(m, 0, sizeof(ModelState));
+  m->model_id = idx;
+  m->n_replicas = n_replicas;
+  atomic_store(&m->stop, 0);
+
+  m->sessions = (OrtSession **)calloc(n_replicas, sizeof(OrtSession *));
+  m->worker_args = (WorkerArg *)calloc(n_replicas, sizeof(WorkerArg));
+  m->threads = (pthread_t *)calloc(n_replicas, sizeof(pthread_t));
+  if (!m->sessions || !m->worker_args || !m->threads) {
+    set_error("[model %d] OOM allocating replica arrays", idx);
+    return 1;
+  }
+
+  if (process_ort_status(api->CreateEnv(ORT_LOGGING_LEVEL_FATAL, RUNTIME_NAME,
+                                        &m->env)) != 0) {
+    set_error("[model %d] Failed to create ORT environment", idx);
+    return 1;
+  }
+
+  if (process_ort_status(api->CreateSessionOptions(&m->session_options)) != 0) {
+    set_error("[model %d] Failed to create session options", idx);
+    return 1;
+  }
+
+  api->SetSessionGraphOptimizationLevel(m->session_options, ORT_ENABLE_ALL);
+  api->SetIntraOpNumThreads(m->session_options, threads_per_replica);
+  api->SetInterOpNumThreads(m->session_options, 1);
+  api->SetSessionExecutionMode(m->session_options, ORT_SEQUENTIAL);
+  if (process_ort_status(api->SessionOptionsAppendExecutionProvider_Hailo(
+          m->session_options, true)) != 0) {
+    set_error(
+        "[model %d] Failed to append Hailo execution provider — check that "
+        "libonnxruntime_providers_hailo.so is alongside libRuntimeLibrary.so",
+        idx);
+    return 1;
+  }
+
+  /* Log available providers (once, for the first model) */
+  if (idx == 0) {
+    char **providers = NULL;
+    int n_providers = 0;
+    api->GetAvailableProviders(&providers, &n_providers);
+    for (int j = 0; j < n_providers; j++)
+      log_info(logger, "Available provider: %s", providers[j]);
+    api->ReleaseAvailableProviders(providers, n_providers);
+  }
+
+  /* Create one session per replica */
+  for (int r = 0; r < n_replicas; r++) {
+    int session_err = 0;
+    if (mc->file_path) {
+      if (r == 0)
+        log_info(
+            logger,
+            "[model %d] Loading from: %s (%d replica(s), %d thread(s) each)",
+            idx, mc->file_path, n_replicas, threads_per_replica);
+      session_err = process_ort_status(api->CreateSession(
+          m->env, mc->file_path, m->session_options, &m->sessions[r]));
+    } else if (mc->model_data && mc->model_size > 0) {
+      if (r == 0)
+        log_info(logger,
+                 "[model %d] Loading from memory (%zu bytes, %d replica(s), %d "
+                 "thread(s) each)",
+                 idx, mc->model_size, n_replicas, threads_per_replica);
+      session_err = process_ort_status(
+          api->CreateSessionFromArray(m->env, mc->model_data, mc->model_size,
+                                      m->session_options, &m->sessions[r]));
+    } else {
+      set_error("[model %d] file_path and model_data are both null", idx);
+      return 1;
+    }
+    if (session_err != 0) {
+      set_error("[model %d] Failed to create ORT session for replica %d", idx,
+                r);
+      return 1;
+    }
+  }
+
+  if (process_ort_status(api->CreateCpuMemoryInfo(
+          OrtArenaAllocator, OrtMemTypeDefault, &m->memory_info)) != 0) {
+    set_error("[model %d] Failed to create memory info", idx);
+    return 1;
+  }
+
+  /* Allocator and I/O names are derived from replica 0 — all replicas share the
+   * same graph */
+  if (process_ort_status(api->CreateAllocator(m->sessions[0], m->memory_info,
+                                              &m->allocator)) != 0) {
+    set_error("[model %d] Failed to create allocator", idx);
+    return 1;
+  }
+
+  if (process_ort_status(api->CreateRunOptions(&m->run_options)) != 0) {
+    set_error("[model %d] Failed to create run options", idx);
+    return 1;
+  }
+
+  m->input_names =
+      get_input_names(m->sessions[0], m->allocator, &m->num_inputs);
+  m->output_names =
+      get_output_names(m->sessions[0], m->allocator, &m->num_outputs);
+  if (!m->input_names || !m->output_names) {
+    set_error("[model %d] Failed to get I/O names", idx);
+    return 1;
+  }
+
+  m->input_queue = new_queue(QUEUE_CAPACITY, true);
+  if (!m->input_queue) {
+    set_error("[model %d] Failed to create input queue", idx);
+    return 1;
+  }
+
+  /* Spawn one worker thread per replica, all draining the shared input queue */
+  for (int r = 0; r < n_replicas; r++) {
+    m->worker_args[r].model = m;
+    m->worker_args[r].session = m->sessions[r];
+    m->worker_args[r].replica_id = r;
+    if (pthread_create(&m->threads[r], NULL, worker_loop, &m->worker_args[r]) !=
+        0) {
+      set_error("[model %d] Failed to create worker thread for replica %d", idx,
+                r);
+      return 1;
+    }
+  }
+
+  m->active = 1;
+  log_info(logger,
+           "[model %d] Ready (%d inputs, %d outputs, %d replica(s), %d "
+           "thread(s) each)",
+           idx, m->num_inputs, m->num_outputs, n_replicas, threads_per_replica);
+  return 0;
 }
 
-const char *runtime_version() {
-    return "0.1.0";
+static void unload_model(ModelState *m) {
+  if (m->active) {
+    atomic_store(&m->stop, 1);
+    if (m->input_queue)
+      shutdown_queue(m->input_queue);
+    for (int r = 0; r < m->n_replicas; r++)
+      pthread_join(m->threads[r], NULL);
+  }
+
+  if (m->input_queue) {
+    Tensors *t;
+    while ((t = (Tensors *)dequeue(m->input_queue, 0)) != NULL)
+      free_tensors(t);
+    free_queue(m->input_queue);
+    m->input_queue = NULL;
+  }
+
+  free_string_array(m->input_names, m->num_inputs);
+  free_string_array(m->output_names, m->num_outputs);
+
+  if (m->run_options)
+    api->ReleaseRunOptions(m->run_options);
+  if (m->allocator)
+    api->ReleaseAllocator(m->allocator);
+  if (m->memory_info)
+    api->ReleaseMemoryInfo(m->memory_info);
+  if (m->sessions) {
+    for (int r = 0; r < m->n_replicas; r++)
+      if (m->sessions[r])
+        api->ReleaseSession(m->sessions[r]);
+    free(m->sessions);
+  }
+  if (m->session_options)
+    api->ReleaseSessionOptions(m->session_options);
+  if (m->env)
+    api->ReleaseEnv(m->env);
+  free(m->worker_args);
+  free(m->threads);
+
+  memset(m, 0, sizeof(ModelState));
 }
 
-const char *runtime_name() {
-    return "OnnxRuntime";
+/* ── Public API ─────────────────────────────────────────────────────────── */
+
+RuntimeStatus runtime_init(Config config) {
+  if (g_initialized) {
+    snprintf(g_last_error, sizeof(g_last_error),
+             "Already initialized — call runtime_cleanup() first");
+    return RUNTIME_STATUS_ALREADY_INITIALIZED;
+  }
+
+  int log_level = config_get_int(&config, "log_level", (int)LOG_INFO);
+  if (log_level < 0 || log_level > 3)
+    log_level = (int)LOG_INFO;
+  g_log_level = (LogLevel)log_level;
+
+  const char *log_file = config_get_str(&config, "log_file", "runtime.log");
+  strncpy(g_log_file, log_file, sizeof(g_log_file) - 1);
+
+  /* n_threads takes precedence over perf_mode */
+  int n_threads = config_get_int(&config, "n_threads", -1);
+  if (n_threads > 0) {
+    if (n_threads > 16)
+      n_threads = 16;
+    g_n_threads = n_threads;
+  } else {
+    const char *perf_mode = config_get_str(&config, "perf_mode", NULL);
+    if (perf_mode) {
+      int ncores = (int)sysconf(_SC_NPROCESSORS_ONLN);
+      if (strcmp(perf_mode, "eco") == 0)
+        g_n_threads = (int)(ncores * 0.4);
+      else if (strcmp(perf_mode, "power") == 0)
+        g_n_threads = (int)(ncores * 0.9);
+      if (g_n_threads < 1)
+        g_n_threads = 1;
+    }
+    /* else: keep default of 4 */
+  }
+
+  int n_replicas = config_get_int(&config, "n_replicas", 1);
+  if (n_replicas < 1)
+    n_replicas = 1;
+  g_n_replicas = n_replicas;
+
+  logger = create_logger(RUNTIME_NAME, g_log_file, g_log_level, LOG_INFO);
+  if (!logger) {
+    snprintf(g_last_error, sizeof(g_last_error), "Failed to create logger");
+    return RUNTIME_STATUS_ERROR;
+  }
+
+  log_info(logger, "Initializing %s v%s", RUNTIME_NAME, RUNTIME_VERSION);
+
+  api = OrtGetApiBase()->GetApi(ONNXRUNTIME_API_VERSION);
+  if (!api) {
+    set_error("Failed to get ORT API (version %d)", ONNXRUNTIME_API_VERSION);
+    return RUNTIME_STATUS_ERROR;
+  }
+
+  g_initialized = 1;
+  log_info(logger, "Initialization complete");
+  return RUNTIME_STATUS_SUCCESS;
+}
+
+RuntimeStatus runtime_load_models(int num_models,
+                                  const ModelConfig *model_configs) {
+  if (!g_initialized)
+    return RUNTIME_STATUS_NOT_INITIALIZED;
+  if (g_models_loaded) {
+    set_error("Models already loaded — call runtime_cleanup() first");
+    return RUNTIME_STATUS_ALREADY_INITIALIZED;
+  }
+  if (num_models <= 0 || num_models > MAX_MODELS || !model_configs) {
+    set_error("Invalid arguments: num_models=%d (max %d)", num_models,
+              MAX_MODELS);
+    return RUNTIME_STATUS_INVALID_ARGUMENT;
+  }
+
+  /* Split thread budget evenly across all replicas of all models */
+  int total_replicas = num_models * g_n_replicas;
+  int threads_per_replica = g_n_threads / total_replicas;
+  if (threads_per_replica < 1)
+    threads_per_replica = 1;
+
+  log_info(logger,
+           "Loading %d model(s): %d replica(s) each, %d thread(s)/replica",
+           num_models, g_n_replicas, threads_per_replica);
+
+  g_output_queue = new_queue(QUEUE_CAPACITY, true);
+  if (!g_output_queue) {
+    set_error("Failed to create output queue");
+    return RUNTIME_STATUS_OUT_OF_MEMORY;
+  }
+
+  for (int i = 0; i < num_models; i++) {
+    if (load_one_model(i, &model_configs[i], threads_per_replica,
+                       g_n_replicas) != 0) {
+      for (int j = 0; j <= i; j++)
+        unload_model(&g_models[j]);
+      free_queue(g_output_queue);
+      g_output_queue = NULL;
+      return RUNTIME_STATUS_ERROR;
+    }
+  }
+
+  g_num_models = num_models;
+  g_models_loaded = 1;
+  log_info(logger, "%d model(s) loaded", g_num_models);
+  return RUNTIME_STATUS_SUCCESS;
+}
+
+RuntimeStatus runtime_enqueue_input(int model_id, Tensors *input_tensors) {
+  if (!g_initialized)
+    return RUNTIME_STATUS_NOT_INITIALIZED;
+  if (!g_models_loaded)
+    return RUNTIME_STATUS_MODEL_NOT_LOADED;
+  if (model_id < 0 || model_id >= g_num_models) {
+    set_error("Invalid model_id: %d (loaded: %d)", model_id, g_num_models);
+    return RUNTIME_STATUS_INVALID_MODEL_ID;
+  }
+  if (!input_tensors) {
+    set_error("input_tensors is NULL");
+    return RUNTIME_STATUS_INVALID_ARGUMENT;
+  }
+
+  if (enqueue(g_models[model_id].input_queue, input_tensors) != 0) {
+    set_error("[model %d] Failed to enqueue input", model_id);
+    return RUNTIME_STATUS_ERROR;
+  }
+
+  log_debug(logger, "[model %d] Input queued (id=%d)", model_id,
+            input_tensors->id);
+  return RUNTIME_STATUS_SUCCESS;
+}
+
+RuntimeStatus runtime_retrieve_output(int *model_id, Tensors **output_tensors,
+                                      int timeout_ms) {
+  if (!g_initialized)
+    return RUNTIME_STATUS_NOT_INITIALIZED;
+  if (!model_id || !output_tensors) {
+    set_error("Null output parameter");
+    return RUNTIME_STATUS_INVALID_ARGUMENT;
+  }
+
+  OutputItem *item = (OutputItem *)dequeue(g_output_queue, (long)timeout_ms);
+  if (!item)
+    return RUNTIME_STATUS_NO_OUTPUT_AVAILABLE;
+
+  *model_id = item->model_id;
+  *output_tensors = item->tensors;
+  log_debug(logger, "[model %d] Output retrieved (id=%d)", item->model_id,
+            item->tensors->id);
+  free(item);
+  return RUNTIME_STATUS_SUCCESS;
+}
+
+RuntimeStatus runtime_cleanup(void) {
+  if (!g_initialized)
+    return RUNTIME_STATUS_SUCCESS; /* idempotent */
+
+  log_info(logger, "Cleaning up runtime");
+
+  for (int i = 0; i < g_num_models; i++)
+    unload_model(&g_models[i]);
+  g_num_models = 0;
+
+  if (g_output_queue) {
+    OutputItem *item;
+    while ((item = (OutputItem *)dequeue(g_output_queue, 0)) != NULL) {
+      free_tensors(item->tensors);
+      free(item);
+    }
+    free_queue(g_output_queue);
+    g_output_queue = NULL;
+  }
+
+  g_initialized = 0;
+  g_models_loaded = 0;
+  g_n_threads = 4;
+  g_n_replicas = 1;
+  memset(g_last_error, 0, sizeof(g_last_error));
+
+  log_info(logger, "Cleanup complete");
+  close_logger(logger);
+  logger = NULL;
+  api = NULL;
+
+  return RUNTIME_STATUS_SUCCESS;
+}
+
+const char *runtime_get_error(void) {
+  return g_last_error[0] ? g_last_error : NULL;
+}
+
+const char *runtime_get_version(void) { return RUNTIME_VERSION; }
+
+const char *runtime_get_name(void) { return RUNTIME_NAME; }
+
+const char *runtime_get_info(void) {
+  if (!g_initialized)
+    return NULL;
+
+  int in_flight = 0;
+  for (int i = 0; i < g_num_models; i++) {
+    if (g_models[i].active && g_models[i].input_queue)
+      in_flight += g_models[i].input_queue->size;
+  }
+
+  const char *ort_ver = api ? OrtGetApiBase()->GetVersionString() : "unknown";
+  snprintf(g_info_json, sizeof(g_info_json),
+           "{\"loaded_models\":%d,\"requests_in_flight\":%d,\"backend_"
+           "version\":\"%s\"}",
+           g_num_models, in_flight, ort_ver ? ort_ver : "unknown");
+
+  return g_info_json;
 }
