@@ -90,7 +90,7 @@ jobs:
     strategy:
       matrix:
         platform: [X86_64, AARCH64]
-        hailort_version: ["4.20.0"]
+        hailort_version: ["4.17.0", "4.18.0", "4.19.0", "4.20.0"]
     steps:
       - uses: actions/checkout@v4
 
