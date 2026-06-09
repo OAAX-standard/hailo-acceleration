@@ -5,4 +5,4 @@
 
 #include "oaax_runtime.h"
 
-#endif  /* RUNTIME_CORE_H */
+#endif /* RUNTIME_CORE_H */

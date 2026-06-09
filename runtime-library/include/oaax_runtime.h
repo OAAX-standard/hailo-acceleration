@@ -8,12 +8,13 @@ extern "C" {
 #endif
 
 #ifdef _WIN32
-#define OAAX_EXPORT __declspec(dllexport)
+    #define OAAX_EXPORT __declspec(dllexport)
 #else
-#define OAAX_EXPORT __attribute__((visibility("default")))
+    #define OAAX_EXPORT __attribute__((visibility("default")))
 #endif
 
-typedef enum RuntimeStatus {
+typedef enum RuntimeStatus
+{
     RUNTIME_STATUS_SUCCESS = 0,
     RUNTIME_STATUS_ERROR = 1,
     RUNTIME_STATUS_NOT_INITIALIZED = 2,
@@ -35,7 +36,8 @@ typedef enum RuntimeStatus {
     RUNTIME_STATUS_INVALID_MODEL_ID = 18
 } RuntimeStatus;
 
-typedef enum TensorElementType {
+typedef enum TensorElementType
+{
     DATA_TYPE_UNDEFINED = 0,
     DATA_TYPE_FLOAT = 1,
     DATA_TYPE_UINT8 = 2,
@@ -65,30 +67,34 @@ typedef enum TensorElementType {
     DATA_TYPE_INT2 = 26
 } TensorElementType;
 
-typedef struct TensorDescriptor {
-    char *name;               /* tensor name as declared in the ONNX graph */
+typedef struct TensorDescriptor
+{
+    char* name; /* tensor name as declared in the ONNX graph */
     TensorElementType data_type;
-    int rank;                 /* number of dimensions */
-    int *shape;               /* dimension sizes, e.g. {1, 3, 640, 640} */
-    size_t data_size;         /* byte length of data */
-    void *data;               /* raw tensor bytes, caller-allocated */
+    int rank; /* number of dimensions */
+    int* shape; /* dimension sizes, e.g. {1, 3, 640, 640} */
+    size_t data_size; /* byte length of data */
+    void* data; /* raw tensor bytes, caller-allocated */
 } TensorDescriptor;
 
-typedef struct Tensors {
-    int id;                   /* caller-assigned request token; echoed back on output */
+typedef struct Tensors
+{
+    int id; /* caller-assigned request token; echoed back on output */
     int num_tensors;
-    TensorDescriptor *tensors;
+    TensorDescriptor* tensors;
 } Tensors;
 
-typedef struct Config {
+typedef struct Config
+{
     int length;
-    const char **keys;
-    const char **values;
+    const char** keys;
+    const char** values;
 } Config;
 
-typedef struct ModelConfig {
-    const char *file_path;
-    const unsigned char *model_data;
+typedef struct ModelConfig
+{
+    const char* file_path;
+    const unsigned char* model_data;
     size_t model_size;
     Config config;
 } ModelConfig;
@@ -110,36 +116,37 @@ OAAX_EXPORT RuntimeStatus runtime_init(Config config);
 /* Load one or more ONNX models and start their inference worker threads.
  * Each ModelConfig may specify a file_path or in-memory model_data/model_size.
  * Per-model config key: "n_threads" (int, default 4). */
-OAAX_EXPORT RuntimeStatus runtime_load_models(int num_models, const ModelConfig *model_configs);
+OAAX_EXPORT RuntimeStatus runtime_load_models(int num_models, const ModelConfig* model_configs);
 
 /* Submit an input tensor batch to the specified model's async queue.
  * The runtime takes ownership of input_tensors and will free it after inference. */
-OAAX_EXPORT RuntimeStatus runtime_enqueue_input(int model_id, Tensors *input_tensors);
+OAAX_EXPORT RuntimeStatus runtime_enqueue_input(int model_id, Tensors* input_tensors);
 
 /* Dequeue one inference result.
  * timeout_ms < 0: block indefinitely; 0: non-blocking; >0: wait up to N ms.
  * Returns RUNTIME_STATUS_NO_OUTPUT_AVAILABLE if no result is ready within the timeout.
  * The caller is responsible for freeing *output_tensors. */
-OAAX_EXPORT RuntimeStatus runtime_retrieve_output(int *model_id, Tensors **output_tensors, int timeout_ms);
+OAAX_EXPORT RuntimeStatus
+    runtime_retrieve_output(int* model_id, Tensors** output_tensors, int timeout_ms);
 
 /* Stop all worker threads and release all resources. Idempotent. */
 OAAX_EXPORT RuntimeStatus runtime_cleanup(void);
 
 /* Return the last error string, or NULL if no error has occurred. */
-OAAX_EXPORT const char *runtime_get_error(void);
+OAAX_EXPORT const char* runtime_get_error(void);
 
 /* Return the runtime version string. */
-OAAX_EXPORT const char *runtime_get_version(void);
+OAAX_EXPORT const char* runtime_get_version(void);
 
 /* Return the runtime name string (e.g. "OAAX Hailo Runtime"). */
-OAAX_EXPORT const char *runtime_get_name(void);
+OAAX_EXPORT const char* runtime_get_name(void);
 
-/* Return a JSON string with runtime diagnostics: loaded_models, requests_in_flight, backend_version.
- * Returns NULL if the runtime is not initialized. */
-OAAX_EXPORT const char *runtime_get_info(void);
+/* Return a JSON string with runtime diagnostics: loaded_models, requests_in_flight,
+ * backend_version. Returns NULL if the runtime is not initialized. */
+OAAX_EXPORT const char* runtime_get_info(void);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif  /* OAAX_RUNTIME_INTERFACE_H */
+#endif /* OAAX_RUNTIME_INTERFACE_H */
