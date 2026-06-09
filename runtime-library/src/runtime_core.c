@@ -297,7 +297,10 @@ static int load_one_model(int idx, const ModelConfig *mc) {
     api->SetIntraOpNumThreads(m->session_options, n_threads);
     api->SetInterOpNumThreads(m->session_options, 1);
     api->SetSessionExecutionMode(m->session_options, ORT_SEQUENTIAL);
-    api->SessionOptionsAppendExecutionProvider_Hailo(m->session_options, true);
+    if (process_ort_status(api->SessionOptionsAppendExecutionProvider_Hailo(m->session_options, true)) != 0) {
+        set_error("[model %d] Failed to append Hailo execution provider — check that libonnxruntime_providers_hailo.so is alongside libRuntimeLibrary.so", idx);
+        return 1;
+    }
 
     /* Log available providers */
     char **providers = NULL;

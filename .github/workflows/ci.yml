@@ -89,6 +89,7 @@ jobs:
     strategy:
       matrix:
         platform: [X86_64, AARCH64]
+        hailort_version: ["4.20.0"]
     steps:
       - uses: actions/checkout@v4
 
@@ -96,7 +97,7 @@ jobs:
         run: sudo bash scripts/setup-env.sh
 
       - name: Build runtime (${{ matrix.platform }})
-        run: bash runtime-library/build-runtime.sh ${{ matrix.platform }}
+        run: bash runtime-library/build-runtime.sh ${{ matrix.platform }} ${{ matrix.hailort_version }}
 
       - name: Build C++ tests (X86_64 only)
         if: matrix.platform == 'X86_64'
@@ -112,8 +113,8 @@ jobs:
       - name: Upload runtime artifact
         uses: actions/upload-artifact@v4
         with:
-          name: runtime-library-${{ matrix.platform }}
-          path: runtime-library/artifacts/runtime-library-${{ matrix.platform }}.tar.gz
+          name: runtime-library-${{ matrix.platform }}-${{ matrix.hailort_version }}
+          path: runtime-library/artifacts/runtime-library-${{ matrix.platform }}-${{ matrix.hailort_version }}.tar.gz
           retention-days: 1
 
       - name: Determine version
@@ -138,11 +139,11 @@ jobs:
           s3cmd_flags="--access_key=$S3_ACCESS_KEY --secret_key=$S3_SECRET_KEY --host=$S3_ENDPOINT_URL --host-bucket=%(bucket)s.$S3_ENDPOINT_URL --bucket-location=us-east-1 --ssl"
           # shellcheck disable=SC2086
           s3cmd $s3cmd_flags put \
-            "runtime-library/artifacts/runtime-library-${{ matrix.platform }}.tar.gz" \
-            "s3://oaax/runtimes/${{ env.version }}/HAILO/${arch}/Ubuntu/library.tar.gz"
+            "runtime-library/artifacts/runtime-library-${{ matrix.platform }}-${{ matrix.hailort_version }}.tar.gz" \
+            "s3://oaax/runtimes/${{ env.version }}/HAILO/${arch}/Ubuntu/library-${{ matrix.hailort_version }}.tar.gz"
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
             # shellcheck disable=SC2086
             s3cmd $s3cmd_flags put \
-              "runtime-library/artifacts/runtime-library-${{ matrix.platform }}.tar.gz" \
-              "s3://oaax/runtimes/latest/HAILO/${arch}/Ubuntu/library.tar.gz"
+              "runtime-library/artifacts/runtime-library-${{ matrix.platform }}-${{ matrix.hailort_version }}.tar.gz" \
+              "s3://oaax/runtimes/latest/HAILO/${arch}/Ubuntu/library-${{ matrix.hailort_version }}.tar.gz"
           fi

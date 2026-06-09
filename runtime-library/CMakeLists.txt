@@ -158,7 +158,7 @@ target_include_directories(RuntimeLibrary PUBLIC ${CPUINFO_DIR}/include)
 target_link_directories(RuntimeLibrary PUBLIC "${CPUINFO_DIR}/${GENERIC_BUILD_TARGET}")
 target_link_libraries(RuntimeLibrary PUBLIC cpuinfo)
 
-target_link_libraries(RuntimeLibrary PUBLIC -Wl,-rpath,./)
+target_link_libraries(RuntimeLibrary PUBLIC "-Wl,-rpath,\$ORIGIN")
 target_link_libraries(RuntimeLibrary PUBLIC -Wl,--disable-new-dtags)
 
 target_include_directories(RuntimeLibrary PUBLIC ${ONNX_RUNTIME_DIR}/${GENERIC_BUILD_TARGET}-${HAILORT_VERSION}/include)

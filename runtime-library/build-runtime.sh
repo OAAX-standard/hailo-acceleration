@@ -23,7 +23,12 @@ cp build/libonnxruntime_providers_shared.so     "$STAGING/"
 cp build/libhailort.so.*                        "$STAGING/" 2>/dev/null || true
 cp include/oaax_runtime.h                       "$STAGING/"
 
-tar czf "artifacts/runtime-library-${PLATFORM}.tar.gz" -C "$STAGING" .
+# Fix RPATHs so all .so files find siblings from their own directory ($ORIGIN),
+# regardless of the working directory when the runtime is loaded.
+patchelf --set-rpath '$ORIGIN' "$STAGING/libonnxruntime_providers_hailo.so"
+patchelf --set-rpath '$ORIGIN' "$STAGING/libonnxruntime_providers_shared.so"
+
+tar czf "artifacts/runtime-library-${PLATFORM}-${HAILORT_VERSION}.tar.gz" -C "$STAGING" .
 rm -rf "$STAGING"
 
-echo "Artifact: runtime-library/artifacts/runtime-library-${PLATFORM}.tar.gz"
+echo "Artifact: runtime-library/artifacts/runtime-library-${PLATFORM}-${HAILORT_VERSION}.tar.gz"
