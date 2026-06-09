@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #ifndef ONNXRUNTIME_API_VERSION
 #define ONNXRUNTIME_API_VERSION 15
@@ -32,23 +33,33 @@ typedef struct {
     Tensors *tensors;
 } OutputItem;
 
+typedef struct ModelState ModelState;
+
 typedef struct {
+    ModelState *model;
+    OrtSession *session;
+    int replica_id;
+} WorkerArg;
+
+struct ModelState {
     int model_id;
     int active;
-    OrtSession *session;
+    int n_replicas;
+    OrtSession **sessions;       /* array of n_replicas */
+    WorkerArg *worker_args;      /* array of n_replicas */
+    pthread_t *threads;          /* array of n_replicas */
     OrtRunOptions *run_options;
     OrtAllocator *allocator;
     OrtMemoryInfo *memory_info;
     OrtEnv *env;
     OrtSessionOptions *session_options;
     Queue *input_queue;
-    pthread_t thread;
     atomic_int stop;
     char **input_names;
     int num_inputs;
     char **output_names;
     int num_outputs;
-} ModelState;
+};
 
 /* ── Module state ───────────────────────────────────────────────────────── */
 
@@ -58,6 +69,8 @@ static char g_last_error[1024] = {0};
 static char g_info_json[512] = {0};
 static LogLevel g_log_level = LOG_INFO;
 static char g_log_file[256] = "runtime.log";
+static int g_n_threads = 4;
+static int g_n_replicas = 1;
 
 static ModelState g_models[MAX_MODELS];
 static int g_num_models = 0;
@@ -161,7 +174,7 @@ static Tensors *build_output(ModelState *m, OrtValue **output_values, int reques
 
 /* ── Inference execution ────────────────────────────────────────────────── */
 
-static Tensors *run_inference(ModelState *m, const Tensors *input) {
+static Tensors *run_inference(ModelState *m, OrtSession *session, const Tensors *input) {
     int n_in = input->num_tensors;
     OrtValue **input_values = (OrtValue **)calloc(n_in, sizeof(OrtValue *));
     OrtValue **output_values = (OrtValue **)calloc(m->num_outputs, sizeof(OrtValue *));
@@ -198,7 +211,7 @@ static Tensors *run_inference(ModelState *m, const Tensors *input) {
     }
 
     if (process_ort_status(api->Run(
-            m->session, m->run_options,
+            session, m->run_options,
             (const char *const *)m->input_names,
             (const OrtValue *const *)input_values, n_in,
             (const char *const *)m->output_names, m->num_outputs,
@@ -229,8 +242,11 @@ cleanup:
 /* ── Worker thread ──────────────────────────────────────────────────────── */
 
 static void *worker_loop(void *arg) {
-    ModelState *m = (ModelState *)arg;
-    log_info(logger, "[model %d] Worker thread started", m->model_id);
+    WorkerArg *wa = (WorkerArg *)arg;
+    ModelState *m = wa->model;
+    OrtSession *session = wa->session;
+
+    log_info(logger, "[model %d] Worker thread %d started", m->model_id, wa->replica_id);
 
     while (1) {
         Tensors *input = (Tensors *)dequeue(m->input_queue, WORKER_POLL_MS);
@@ -242,12 +258,14 @@ static void *worker_loop(void *arg) {
 
         if (input == NULL) continue;
 
-        log_debug(logger, "[model %d] Running inference (request id=%d)", m->model_id, input->id);
-        Tensors *output = run_inference(m, input);
+        log_debug(logger, "[model %d] Replica %d running inference (request id=%d)",
+                  m->model_id, wa->replica_id, input->id);
+        Tensors *output = run_inference(m, session, input);
         free_tensors(input);
 
         if (!output) {
-            log_warning(logger, "[model %d] Inference failed, dropping result", m->model_id);
+            log_warning(logger, "[model %d] Replica %d inference failed, dropping result",
+                        m->model_id, wa->replica_id);
             continue;
         }
 
@@ -267,21 +285,26 @@ static void *worker_loop(void *arg) {
         }
     }
 
-    log_info(logger, "[model %d] Worker thread stopped", m->model_id);
+    log_info(logger, "[model %d] Worker thread %d stopped", m->model_id, wa->replica_id);
     return NULL;
 }
 
 /* ── Per-model load/unload ──────────────────────────────────────────────── */
 
-static int load_one_model(int idx, const ModelConfig *mc) {
+static int load_one_model(int idx, const ModelConfig *mc, int threads_per_replica, int n_replicas) {
     ModelState *m = &g_models[idx];
     memset(m, 0, sizeof(ModelState));
     m->model_id = idx;
+    m->n_replicas = n_replicas;
     atomic_store(&m->stop, 0);
 
-    int n_threads = config_get_int(&mc->config, "n_threads", 4);
-    if (n_threads < 1) n_threads = 1;
-    if (n_threads > 16) n_threads = 16;
+    m->sessions    = (OrtSession **)calloc(n_replicas, sizeof(OrtSession *));
+    m->worker_args = (WorkerArg *)calloc(n_replicas, sizeof(WorkerArg));
+    m->threads     = (pthread_t *)calloc(n_replicas, sizeof(pthread_t));
+    if (!m->sessions || !m->worker_args || !m->threads) {
+        set_error("[model %d] OOM allocating replica arrays", idx);
+        return 1;
+    }
 
     if (process_ort_status(api->CreateEnv(ORT_LOGGING_LEVEL_FATAL, RUNTIME_NAME, &m->env)) != 0) {
         set_error("[model %d] Failed to create ORT environment", idx);
@@ -294,7 +317,7 @@ static int load_one_model(int idx, const ModelConfig *mc) {
     }
 
     api->SetSessionGraphOptimizationLevel(m->session_options, ORT_ENABLE_ALL);
-    api->SetIntraOpNumThreads(m->session_options, n_threads);
+    api->SetIntraOpNumThreads(m->session_options, threads_per_replica);
     api->SetInterOpNumThreads(m->session_options, 1);
     api->SetSessionExecutionMode(m->session_options, ORT_SEQUENTIAL);
     if (process_ort_status(api->SessionOptionsAppendExecutionProvider_Hailo(m->session_options, true)) != 0) {
@@ -302,31 +325,40 @@ static int load_one_model(int idx, const ModelConfig *mc) {
         return 1;
     }
 
-    /* Log available providers */
-    char **providers = NULL;
-    int n_providers = 0;
-    api->GetAvailableProviders(&providers, &n_providers);
-    for (int j = 0; j < n_providers; j++)
-        log_info(logger, "[model %d] Available provider: %s", idx, providers[j]);
-    api->ReleaseAvailableProviders(providers, n_providers);
-
-    /* Create session */
-    int session_err = 0;
-    if (mc->file_path) {
-        log_info(logger, "[model %d] Loading from: %s", idx, mc->file_path);
-        session_err = process_ort_status(
-            api->CreateSession(m->env, mc->file_path, m->session_options, &m->session));
-    } else if (mc->model_data && mc->model_size > 0) {
-        log_info(logger, "[model %d] Loading from memory (%zu bytes)", idx, mc->model_size);
-        session_err = process_ort_status(
-            api->CreateSessionFromArray(m->env, mc->model_data, mc->model_size, m->session_options, &m->session));
-    } else {
-        set_error("[model %d] file_path and model_data are both null", idx);
-        return 1;
+    /* Log available providers (once, for the first model) */
+    if (idx == 0) {
+        char **providers = NULL;
+        int n_providers = 0;
+        api->GetAvailableProviders(&providers, &n_providers);
+        for (int j = 0; j < n_providers; j++)
+            log_info(logger, "Available provider: %s", providers[j]);
+        api->ReleaseAvailableProviders(providers, n_providers);
     }
-    if (session_err != 0) {
-        set_error("[model %d] Failed to create ORT session", idx);
-        return 1;
+
+    /* Create one session per replica */
+    for (int r = 0; r < n_replicas; r++) {
+        int session_err = 0;
+        if (mc->file_path) {
+            if (r == 0)
+                log_info(logger, "[model %d] Loading from: %s (%d replica(s), %d thread(s) each)",
+                         idx, mc->file_path, n_replicas, threads_per_replica);
+            session_err = process_ort_status(
+                api->CreateSession(m->env, mc->file_path, m->session_options, &m->sessions[r]));
+        } else if (mc->model_data && mc->model_size > 0) {
+            if (r == 0)
+                log_info(logger, "[model %d] Loading from memory (%zu bytes, %d replica(s), %d thread(s) each)",
+                         idx, mc->model_size, n_replicas, threads_per_replica);
+            session_err = process_ort_status(
+                api->CreateSessionFromArray(m->env, mc->model_data, mc->model_size,
+                                            m->session_options, &m->sessions[r]));
+        } else {
+            set_error("[model %d] file_path and model_data are both null", idx);
+            return 1;
+        }
+        if (session_err != 0) {
+            set_error("[model %d] Failed to create ORT session for replica %d", idx, r);
+            return 1;
+        }
     }
 
     if (process_ort_status(api->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &m->memory_info)) != 0) {
@@ -334,7 +366,8 @@ static int load_one_model(int idx, const ModelConfig *mc) {
         return 1;
     }
 
-    if (process_ort_status(api->CreateAllocator(m->session, m->memory_info, &m->allocator)) != 0) {
+    /* Allocator and I/O names are derived from replica 0 — all replicas share the same graph */
+    if (process_ort_status(api->CreateAllocator(m->sessions[0], m->memory_info, &m->allocator)) != 0) {
         set_error("[model %d] Failed to create allocator", idx);
         return 1;
     }
@@ -344,8 +377,8 @@ static int load_one_model(int idx, const ModelConfig *mc) {
         return 1;
     }
 
-    m->input_names = get_input_names(m->session, m->allocator, &m->num_inputs);
-    m->output_names = get_output_names(m->session, m->allocator, &m->num_outputs);
+    m->input_names  = get_input_names(m->sessions[0], m->allocator, &m->num_inputs);
+    m->output_names = get_output_names(m->sessions[0], m->allocator, &m->num_outputs);
     if (!m->input_names || !m->output_names) {
         set_error("[model %d] Failed to get I/O names", idx);
         return 1;
@@ -357,26 +390,31 @@ static int load_one_model(int idx, const ModelConfig *mc) {
         return 1;
     }
 
-    if (pthread_create(&m->thread, NULL, worker_loop, m) != 0) {
-        set_error("[model %d] Failed to create worker thread", idx);
-        return 1;
+    /* Spawn one worker thread per replica, all draining the shared input queue */
+    for (int r = 0; r < n_replicas; r++) {
+        m->worker_args[r].model      = m;
+        m->worker_args[r].session    = m->sessions[r];
+        m->worker_args[r].replica_id = r;
+        if (pthread_create(&m->threads[r], NULL, worker_loop, &m->worker_args[r]) != 0) {
+            set_error("[model %d] Failed to create worker thread for replica %d", idx, r);
+            return 1;
+        }
     }
 
     m->active = 1;
-    log_info(logger, "[model %d] Ready (%d inputs, %d outputs, %d threads)",
-             idx, m->num_inputs, m->num_outputs, n_threads);
+    log_info(logger, "[model %d] Ready (%d inputs, %d outputs, %d replica(s), %d thread(s) each)",
+             idx, m->num_inputs, m->num_outputs, n_replicas, threads_per_replica);
     return 0;
 }
 
 static void unload_model(ModelState *m) {
-    /* Stop the worker thread only if it was successfully started. */
     if (m->active) {
         atomic_store(&m->stop, 1);
         if (m->input_queue) shutdown_queue(m->input_queue);
-        pthread_join(m->thread, NULL);
+        for (int r = 0; r < m->n_replicas; r++)
+            pthread_join(m->threads[r], NULL);
     }
 
-    /* Drain and free input queue */
     if (m->input_queue) {
         Tensors *t;
         while ((t = (Tensors *)dequeue(m->input_queue, 0)) != NULL)
@@ -391,9 +429,15 @@ static void unload_model(ModelState *m) {
     if (m->run_options)     api->ReleaseRunOptions(m->run_options);
     if (m->allocator)       api->ReleaseAllocator(m->allocator);
     if (m->memory_info)     api->ReleaseMemoryInfo(m->memory_info);
-    if (m->session)         api->ReleaseSession(m->session);
+    if (m->sessions) {
+        for (int r = 0; r < m->n_replicas; r++)
+            if (m->sessions[r]) api->ReleaseSession(m->sessions[r]);
+        free(m->sessions);
+    }
     if (m->session_options) api->ReleaseSessionOptions(m->session_options);
     if (m->env)             api->ReleaseEnv(m->env);
+    free(m->worker_args);
+    free(m->threads);
 
     memset(m, 0, sizeof(ModelState));
 }
@@ -412,6 +456,28 @@ RuntimeStatus runtime_init(Config config) {
 
     const char *log_file = config_get_str(&config, "log_file", "runtime.log");
     strncpy(g_log_file, log_file, sizeof(g_log_file) - 1);
+
+    /* n_threads takes precedence over perf_mode */
+    int n_threads = config_get_int(&config, "n_threads", -1);
+    if (n_threads > 0) {
+        if (n_threads > 16) n_threads = 16;
+        g_n_threads = n_threads;
+    } else {
+        const char *perf_mode = config_get_str(&config, "perf_mode", NULL);
+        if (perf_mode) {
+            int ncores = (int)sysconf(_SC_NPROCESSORS_ONLN);
+            if (strcmp(perf_mode, "eco") == 0)
+                g_n_threads = (int)(ncores * 0.4);
+            else if (strcmp(perf_mode, "power") == 0)
+                g_n_threads = (int)(ncores * 0.9);
+            if (g_n_threads < 1) g_n_threads = 1;
+        }
+        /* else: keep default of 4 */
+    }
+
+    int n_replicas = config_get_int(&config, "n_replicas", 1);
+    if (n_replicas < 1) n_replicas = 1;
+    g_n_replicas = n_replicas;
 
     logger = create_logger(RUNTIME_NAME, g_log_file, g_log_level, LOG_INFO);
     if (!logger) {
@@ -443,6 +509,14 @@ RuntimeStatus runtime_load_models(int num_models, const ModelConfig *model_confi
         return RUNTIME_STATUS_INVALID_ARGUMENT;
     }
 
+    /* Split thread budget evenly across all replicas of all models */
+    int total_replicas = num_models * g_n_replicas;
+    int threads_per_replica = g_n_threads / total_replicas;
+    if (threads_per_replica < 1) threads_per_replica = 1;
+
+    log_info(logger, "Loading %d model(s): %d replica(s) each, %d thread(s)/replica",
+             num_models, g_n_replicas, threads_per_replica);
+
     g_output_queue = new_queue(QUEUE_CAPACITY, true);
     if (!g_output_queue) {
         set_error("Failed to create output queue");
@@ -450,8 +524,7 @@ RuntimeStatus runtime_load_models(int num_models, const ModelConfig *model_confi
     }
 
     for (int i = 0; i < num_models; i++) {
-        if (load_one_model(i, &model_configs[i]) != 0) {
-            /* Clean up model i (partially initialized) plus all already-loaded models. */
+        if (load_one_model(i, &model_configs[i], threads_per_replica, g_n_replicas) != 0) {
             for (int j = 0; j <= i; j++) unload_model(&g_models[j]);
             free_queue(g_output_queue);
             g_output_queue = NULL;
@@ -524,6 +597,8 @@ RuntimeStatus runtime_cleanup(void) {
 
     g_initialized = 0;
     g_models_loaded = 0;
+    g_n_threads = 4;
+    g_n_replicas = 1;
     memset(g_last_error, 0, sizeof(g_last_error));
 
     log_info(logger, "Cleanup complete");
