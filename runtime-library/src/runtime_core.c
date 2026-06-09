@@ -509,8 +509,9 @@ RuntimeStatus runtime_load_models(int num_models, const ModelConfig *model_confi
         return RUNTIME_STATUS_INVALID_ARGUMENT;
     }
 
-    /* Split thread budget evenly across replicas (each model gets the same allocation) */
-    int threads_per_replica = g_n_threads / g_n_replicas;
+    /* Split thread budget evenly across all replicas of all models */
+    int total_replicas = num_models * g_n_replicas;
+    int threads_per_replica = g_n_threads / total_replicas;
     if (threads_per_replica < 1) threads_per_replica = 1;
 
     log_info(logger, "Loading %d model(s): %d replica(s) each, %d thread(s)/replica",
