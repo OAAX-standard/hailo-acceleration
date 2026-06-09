@@ -17,15 +17,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install clang-format
-        run: sudo apt-get install -y clang-format
+      - name: Install clang-format-19
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          sudo add-apt-repository "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-19 main"
+          sudo apt-get update -y
+          sudo apt-get install -y clang-format-19
 
       - name: Check C formatting
         run: |
           find runtime-library/src runtime-library/include \
             -name '*.c' -o -name '*.h' | \
             grep -v -e 'protobuf-c\.h' -e 'onnx\.pb-c\.h' | \
-            xargs clang-format --dry-run --Werror
+            xargs clang-format-19 --dry-run --Werror
 
   build-toolchain:
     name: Build conversion toolchain + error-handling tests
