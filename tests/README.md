@@ -18,6 +18,7 @@ bash tests/runtime/build-tests.sh
 cd tests/runtime/build
 ./simple_test
 ./lifecycle_test
+./queue_test     # queue overflow behaviour, links queue.c directly
 ```
 
 **With a Hailo ONNX model** (requires Hailo device):

@@ -105,18 +105,22 @@ typedef struct ModelConfig {
 
 /* Initialize the runtime with the given configuration.
  * Must be called before any other function.
- * Config keys: "log_level" (int 0-3), "log_file" (path). */
+ * Config keys: "log_level" (int 0-3), "log_file" (path),
+ * "n_threads" (int 1-16, default 4), "perf_mode" ("eco"|"power", used when
+ * n_threads is unset), "n_replicas" (int >= 1, default 1). */
 OAAX_EXPORT RuntimeStatus runtime_init(Config config);
 
 /* Load one or more ONNX models and start their inference worker threads.
  * Each ModelConfig may specify a file_path or in-memory model_data/model_size.
- * Per-model config key: "n_threads" (int, default 4). */
+ * Per-model ModelConfig.config is currently unused; tuning keys ("n_threads",
+ * "n_replicas", "perf_mode") are read from the runtime_init() Config. */
 OAAX_EXPORT RuntimeStatus runtime_load_models(int num_models,
                                               const ModelConfig *model_configs);
 
 /* Submit an input tensor batch to the specified model's async queue.
- * The runtime takes ownership of input_tensors and will free it after
- * inference. */
+ * The runtime takes ownership of input_tensors on SUCCESS and will free it
+ * after inference. If the queue is full the oldest queued request is dropped
+ * (and freed) to make room. On error the caller keeps ownership. */
 OAAX_EXPORT RuntimeStatus runtime_enqueue_input(int model_id,
                                                 Tensors *input_tensors);
 

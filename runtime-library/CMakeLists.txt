@@ -5,7 +5,7 @@ project(RuntimeLibrary)
 add_definitions(-DONNXRUNTIME_API_VERSION=11)
 
 
-# where is the nx-c source code located?
+# source, include and dependency directories
 set(SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set(INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(DEPS_DIR ${CMAKE_CURRENT_LIST_DIR}/deps)
@@ -63,12 +63,8 @@ set(TARGET ${GENERIC_BUILD_TARGET})
 # see https://gist.github.com/robinvanemden/72aa87b1a656d5cd4a06ea0a9b77e4ac
 # also: NEON on aarch64 is automatically implied (https://stackoverflow.com/a/29891469)
 
-######################### webassembly wamr settings ####################################################################
-
 # set make system
 set(CMAKE_SYSTEM_NAME Linux)
-
-######################## webassembly wamr library build ################################################################
 
 # Reset default linker flags
 set(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS " ")

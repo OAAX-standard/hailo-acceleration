@@ -35,15 +35,21 @@ runtime-library/        C shared library (OAAX v2 API)
     runtime_core.c      API implementation (Hailo ORT execution provider)
     runtime_utils.c     ORT helpers, type mapping, free_tensors
   deps/
-    onnxruntime/        Pre-built Hailo ORT static libraries
-    hailort/            Pre-built HailoRT shared libraries
+    onnxruntime/        Pre-built Hailo ORT static libraries per HailoRT version
+                        (+ the ORT source trees they were built from, used only by
+                        cross-compile-*.sh, not by CMake)
+    hailort/            HailoRT sources and pre-built shared libraries
+    utils/              Queue and logger
 tests/
-  runtime/              C++ test binaries (simple_test, lifecycle_test, ...)
+  runtime/              C++ test binaries (simple_test, lifecycle_test, queue_test, ...)
   test_docker.py        Docker conversion integration tests
   test_yolov8n_conversion.py  YOLOv8n end-to-end convert + run test
   test_yolo_models.py   Parametrized multi-model conversion suite
 scripts/
   setup-env.sh          Install cross-compilation toolchains
+.github/workflows/      CI (lint, toolchain build, runtime build + tests, S3 upload)
+VERSION, CHANGELOG.md   Release version and history
+ThirdPartyNotices.txt   Licenses of bundled third-party code
 ```
 
 ## Building the runtime library
@@ -57,7 +63,9 @@ bash runtime-library/build-runtime.sh X86_64
 bash runtime-library/build-runtime.sh AARCH64
 ```
 
-Output: `runtime-library/artifacts/runtime-library-<PLATFORM>.tar.gz`
+Output: `runtime-library/artifacts/runtime-library-<PLATFORM>-<HAILORT_VERSION>.tar.gz`
+
+The X86_64 build targets Haswell or newer CPUs (`-march=haswell`, AVX2).
 
 Each archive contains:
 - `libRuntimeLibrary.so` — the OAAX runtime
@@ -66,7 +74,8 @@ Each archive contains:
 - `libhailort.so.*` — HailoRT library
 - `oaax_runtime.h` — public API header
 
-The default HailoRT version is `4.20.0`. Override with a second argument:
+Supported HailoRT versions: `4.17.0`, `4.18.0`, `4.19.0`, `4.20.0` (default `4.20.0`).
+Override with a second argument:
 ```bash
 bash runtime-library/build-runtime.sh X86_64 4.19.0
 ```
@@ -169,12 +178,19 @@ runtime_cleanup();   // idempotent
 |---|---|---|
 | `"log_level"` | `0`=DEBUG … `3`=ERROR | `1` (INFO) |
 | `"log_file"` | file path | `"runtime.log"` |
+| `"n_threads"` | 1–16 total ORT threads, split evenly across all model replicas | `4` |
+| `"perf_mode"` | `"eco"` (40% of cores) or `"power"` (90%); used only if `n_threads` is unset | unset |
+| `"n_replicas"` | ≥ 1 ORT sessions (worker threads) per model | `1` |
 
-### `ModelConfig.config` keys
+`ModelConfig.config` is currently unused; all tuning goes through `runtime_init`.
 
-| Key | Values | Default |
-|---|---|---|
-| `"n_threads"` | 1–16 | `4` |
+### Queues
+
+Each model has an input queue and the runtime has one output queue, both holding
+100 items. When a queue is full the **oldest** item is dropped (and freed) to
+make room, so `runtime_enqueue_input` still returns success. Keep
+`runtime_retrieve_output` draining results. Ownership of `input_tensors` passes
+to the runtime only on success.
 
 On any non-`RUNTIME_STATUS_SUCCESS` return, call `runtime_get_error()` for a
 human-readable description.
@@ -190,6 +206,10 @@ Tested on Hailo SDK 3.25.0 / HailoRT 4.20.0:
 | YOLO11n | ❌ | Backbone attention layers unsupported in SDK 3.25.0 |
 | YOLO26n | ❌ | Backbone attention layers unsupported in SDK 3.25.0 |
 
+> No models are shipped in this repository. The YOLO models above come from
+> Ultralytics and are licensed under AGPL-3.0; export them yourself and check
+> that license before redistributing them or their Hailo conversions.
+
 ## Testing
 
 ### C++ runtime tests (no hardware required for API tests)
@@ -203,6 +223,7 @@ cd tests/runtime/build
 # API-only (no model needed)
 ./simple_test
 ./lifecycle_test
+./queue_test
 
 # Full inference (requires Hailo device + a converted model)
 ./lifecycle_test   model.hailo8.onnx --input-name input0 --imgsz 640
@@ -224,18 +245,23 @@ pytest tests/test_yolov8n_conversion.py -v -s   # ~6 min
 pytest tests/test_yolo_models.py -v -s           # ~10 min per model
 ```
 
+The YOLO tests look for `yolov8n.onnx`, `yolov8s.onnx`, `yolo11n.onnx` and
+`yolo26n.onnx` in the repo root. Override with the `YOLOV8N_ONNX`,
+`YOLO11N_ONNX` and `YOLO26N_ONNX` env vars; `YOLOV8N_ZIP` sets the calibration
+zip location (default: system temp dir).
+
 See [tests/README.md](tests/README.md) for full details.
 
 ## Pre-built artifacts
 
-Pre-built runtimes are published to S3 on every CI run:
+Pre-built runtimes (one per HailoRT version) are published to S3 on every CI run (`latest` only from `main`; `<version>` is the content of `VERSION` on `main`, the branch name on PRs):
 
 ```
-s3://oaax/runtimes/<version>/Hailo/{x86_64,aarch64}/Ubuntu/library.tar.gz
-s3://oaax/runtimes/latest/Hailo/{x86_64,aarch64}/Ubuntu/library.tar.gz
+s3://oaax/runtimes/<version>/HAILO/{x86_64,aarch64}/Ubuntu/library-<hailort_version>.tar.gz
+s3://oaax/runtimes/latest/HAILO/{x86_64,aarch64}/Ubuntu/library-<hailort_version>.tar.gz
 
-s3://oaax/conversion-toolchain/<version>/Hailo/oaax-hailo-toolchain.tar
-s3://oaax/conversion-toolchain/latest/Hailo/oaax-hailo-toolchain.tar
+s3://oaax/conversion-toolchain/<version>/HAILO/oaax-hailo-toolchain.tar
+s3://oaax/conversion-toolchain/latest/HAILO/oaax-hailo-toolchain.tar
 ```
 
 Community contributions and usage examples are available in the
