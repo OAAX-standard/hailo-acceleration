@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -27,7 +28,7 @@ from conversion_toolchain.utils import convert_to_hailo_onnx
 
 
 # ── Calibration images (reuse the yolov8n COCO val2017 zip) ─────────────────
-_CALIB_ZIP = Path("/home/ayoub/tmp/yolov8n.zip")
+_CALIB_ZIP = Path(os.environ.get("YOLOV8N_ZIP", Path(tempfile.gettempdir()) / "yolov8n.zip"))
 
 _YOLO_OPTIONS = {
     "start_node_names": [],

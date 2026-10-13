@@ -28,3 +28,9 @@ __pycache__/
 
 # Test build output
 tests/runtime/build/
+
+# Logs and local test caches
+*.log
+*.log.*
+runtime.log.*
+.pytest_cache/

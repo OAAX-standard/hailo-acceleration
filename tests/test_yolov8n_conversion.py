@@ -10,9 +10,11 @@ Run with:
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import onnx
@@ -20,8 +22,8 @@ import pytest
 
 _REPO_ROOT      = Path(__file__).parents[1]
 _CONVERT_SCRIPT = _REPO_ROOT / "tests" / "convert_yolov8n.py"
-_YOLOV8N_ONNX   = Path("/home/ayoub/nvidia-acceleration/yolov8n.onnx")
-_YOLOV8N_ZIP    = Path("/home/ayoub/tmp/yolov8n.zip")
+_YOLOV8N_ONNX   = Path(os.environ.get("YOLOV8N_ONNX", _REPO_ROOT / "yolov8n.onnx"))
+_YOLOV8N_ZIP    = Path(os.environ.get("YOLOV8N_ZIP", Path(tempfile.gettempdir()) / "yolov8n.zip"))
 
 # Stop at the 6 raw conv outputs (3 scales × bbox + class).
 # The DFL decode head is unsupported in Hailo and is run on the host instead.

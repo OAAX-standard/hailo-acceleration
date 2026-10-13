@@ -13,6 +13,7 @@ Writes to <output_dir>:
 import json
 import os
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -37,8 +38,8 @@ def _redirect_sdk_build_dir():
 
 _redirect_sdk_build_dir()
 
-YOLOV8N_ONNX = Path("/home/ayoub/nvidia-acceleration/yolov8n.onnx")
-YOLOV8N_ZIP  = Path("/home/ayoub/tmp/yolov8n.zip")
+YOLOV8N_ONNX = Path(os.environ.get("YOLOV8N_ONNX", Path(__file__).parents[1] / "yolov8n.onnx"))
+YOLOV8N_ZIP  = Path(os.environ.get("YOLOV8N_ZIP", Path(tempfile.gettempdir()) / "yolov8n.zip"))
 
 OPTIONS = {
     # Stop at the 6 raw conv outputs from the detection head (3 scales × bbox + class).

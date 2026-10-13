@@ -31,12 +31,12 @@ MODELS = [
     },
     {
         "name":       "yolo11n",
-        "onnx":       "/home/ayoub/model_onnx_export/ultralytics/exported/yolo11n.onnx",
+        "onnx":       os.environ.get("YOLO11N_ONNX", str(_REPO_ROOT / "yolo11n.onnx")),
         "input_name": "images",
     },
     {
         "name":       "yolo26n",
-        "onnx":       "/home/ayoub/model_onnx_export/ultralytics/exported/yolo26n.onnx",
+        "onnx":       os.environ.get("YOLO26N_ONNX", str(_REPO_ROOT / "yolo26n.onnx")),
         "input_name": "images",
     },
 ]
