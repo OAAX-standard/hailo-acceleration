@@ -188,6 +188,18 @@ int main(int argc, char** argv) {
     }
     PASS("enqueue/retrieve after cleanup return NOT_INITIALIZED");
 
+    // ── 5b. Retrieve after init but before load_models ───────────────────────
+    std::cout << "\n[5b] Retrieve before load_models returns MODEL_NOT_LOADED" << std::endl;
+    {
+        ASSERT(runtime_init(cfg) == RUNTIME_STATUS_SUCCESS, "init failed");
+        int mid = -1;
+        Tensors* out = nullptr;
+        ASSERT(runtime_retrieve_output(&mid, &out, 0) == RUNTIME_STATUS_MODEL_NOT_LOADED,
+               "retrieve with no models loaded must return MODEL_NOT_LOADED (not crash)");
+        ASSERT(runtime_cleanup() == RUNTIME_STATUS_SUCCESS, "cleanup failed");
+    }
+    PASS("retrieve before load_models is guarded");
+
     // ── Model-dependent tests ─────────────────────────────────────────────────
     if (!model_path) {
         std::cout << "\n[6-9] Skipping model-dependent tests (no model path provided)" << std::endl;

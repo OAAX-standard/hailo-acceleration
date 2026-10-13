@@ -46,6 +46,7 @@ struct ModelState {
   int model_id;
   int active;
   int n_replicas;
+  int n_started;          /* worker threads successfully created */
   OrtSession **sessions;  /* array of n_replicas */
   WorkerArg *worker_args; /* array of n_replicas */
   pthread_t *threads;     /* array of n_replicas */
@@ -76,6 +77,15 @@ static int g_n_replicas = 1;
 static ModelState g_models[MAX_MODELS];
 static int g_num_models = 0;
 static Queue *g_output_queue = NULL;
+
+/* Queue overflow callbacks: release the payload of a dropped item. */
+static void drop_input(void *p) { free_tensors((Tensors *)p); }
+
+static void drop_output(void *p) {
+  OutputItem *item = (OutputItem *)p;
+  free_tensors(item->tensors);
+  free(item);
+}
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
 
@@ -424,6 +434,7 @@ static int load_one_model(int idx, const ModelConfig *mc,
     set_error("[model %d] Failed to create input queue", idx);
     return 1;
   }
+  m->input_queue->drop_item = drop_input;
 
   /* Spawn one worker thread per replica, all draining the shared input queue */
   for (int r = 0; r < n_replicas; r++) {
@@ -434,8 +445,9 @@ static int load_one_model(int idx, const ModelConfig *mc,
         0) {
       set_error("[model %d] Failed to create worker thread for replica %d", idx,
                 r);
-      return 1;
+      return 1; /* caller's unload_model() joins the n_started threads */
     }
+    m->n_started++;
   }
 
   m->active = 1;
@@ -447,11 +459,10 @@ static int load_one_model(int idx, const ModelConfig *mc,
 }
 
 static void unload_model(ModelState *m) {
-  if (m->active) {
+  if (m->n_started > 0) {
     atomic_store(&m->stop, 1);
-    if (m->input_queue)
-      shutdown_queue(m->input_queue);
-    for (int r = 0; r < m->n_replicas; r++)
+    shutdown_queue(m->input_queue);
+    for (int r = 0; r < m->n_started; r++)
       pthread_join(m->threads[r], NULL);
   }
 
@@ -541,6 +552,8 @@ RuntimeStatus runtime_init(Config config) {
   api = OrtGetApiBase()->GetApi(ONNXRUNTIME_API_VERSION);
   if (!api) {
     set_error("Failed to get ORT API (version %d)", ONNXRUNTIME_API_VERSION);
+    close_logger(logger);
+    logger = NULL;
     return RUNTIME_STATUS_ERROR;
   }
 
@@ -578,6 +591,7 @@ RuntimeStatus runtime_load_models(int num_models,
     set_error("Failed to create output queue");
     return RUNTIME_STATUS_OUT_OF_MEMORY;
   }
+  g_output_queue->drop_item = drop_output;
 
   for (int i = 0; i < num_models; i++) {
     if (load_one_model(i, &model_configs[i], threads_per_replica,
@@ -628,6 +642,8 @@ RuntimeStatus runtime_retrieve_output(int *model_id, Tensors **output_tensors,
     set_error("Null output parameter");
     return RUNTIME_STATUS_INVALID_ARGUMENT;
   }
+  if (!g_models_loaded)
+    return RUNTIME_STATUS_MODEL_NOT_LOADED;
 
   OutputItem *item = (OutputItem *)dequeue(g_output_queue, (long)timeout_ms);
   if (!item)

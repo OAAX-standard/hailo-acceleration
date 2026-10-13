@@ -18,6 +18,12 @@ endif()
 message(STATUS "Runtime include dir: ${RUNTIME_INCLUDE_DIR}")
 message(STATUS "Runtime lib dir:     ${RUNTIME_LIB_DIR}")
 
+# Hardware-free queue test: compiled against the queue/logger sources directly.
+set(UTILS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../runtime-library/deps/utils")
+add_executable(queue_test queue_test.cpp ${UTILS_DIR}/queue.c ${UTILS_DIR}/logger.c)
+target_include_directories(queue_test PRIVATE ${UTILS_DIR})
+target_link_libraries(queue_test PRIVATE pthread)
+
 foreach(TEST_NAME simple_test lifecycle_test multi_model_test yolo_test)
     add_executable(${TEST_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/${TEST_NAME}.cpp)
     target_include_directories(${TEST_NAME} PRIVATE ${RUNTIME_INCLUDE_DIR})

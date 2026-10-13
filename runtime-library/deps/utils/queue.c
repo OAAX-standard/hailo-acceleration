@@ -19,6 +19,7 @@ Queue *new_queue(int capacity, bool thread_safe) {
     queue->shutdown = false;
     queue->head = NULL;
     queue->tail = NULL;
+    queue->drop_item = NULL;
 
     pthread_mutexattr_t mutex_attr;
     pthread_mutexattr_init(&mutex_attr);
@@ -56,12 +57,13 @@ int enqueue(Queue *queue, void *data) {
     }
 
     if (queue->size >= queue->capacity) {
-        /* Drop the oldest item — caller is responsible for freeing data. */
+        /* Drop the oldest item, releasing its payload via drop_item if set. */
         QueueItem *old_head = queue->head;
         queue->head = old_head->next;
         queue->size--;
         if (queue->head == NULL) queue->tail = NULL;
         log_warning(logger, "Queue full — oldest item dropped");
+        if (queue->drop_item) queue->drop_item(old_head->data);
         free(old_head);
     }
 

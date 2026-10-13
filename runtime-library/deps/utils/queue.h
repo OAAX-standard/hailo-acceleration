@@ -17,6 +17,8 @@ typedef struct {
     bool thread_safe;
     bool shutdown;
     QueueItem *head, *tail;
+    /* Optional: frees a payload dropped when the queue overflows. */
+    void (*drop_item)(void *);
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 } Queue;
