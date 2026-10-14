@@ -32,11 +32,70 @@ SOFTWARE.
 ## HailoRT
 
 Source: https://github.com/hailo-ai/hailort  
-License: *Unlicensed Software*
+License: MIT License (Copyright (c) 2020-2022 Hailo Technologies Ltd.)
 
-Currently, there is no official license provided for HailoRT. 
-The usage, modification, and distribution of this software may be subject to clarification or permission from the HailoRT provider. 
-Please ensure you have appropriate authorization to use this software if applicable.
+The full license text is in `runtime-library/deps/hailort/hailort-<version>/hailort/LICENSE`;
+third-party components of HailoRT are listed in `LICENSE-3RD-PARTY.md` next to it.
+
+The Hailo firmware is covered by a separate, proprietary EULA
+(`runtime-library/deps/hailort/hailort-<version>/hailort/hailo_firmware_eula`).
+This repository does not contain firmware images. The Hailo Dataflow Compiler
+used by the conversion toolchain is proprietary, is not distributed here, and
+must be obtained from Hailo under its own license.
+
+---
+
+## onnxruntime dependencies (Hailo fork of onnxruntime)
+
+The pre-built ORT static libraries under `runtime-library/deps/onnxruntime/`
+statically include third-party code (abseil, protobuf, flatbuffers, onnx, nsync,
+and others). Their licenses are listed in `ThirdPartyNotices.txt` inside each
+`runtime-library/deps/onnxruntime/onnxruntime-<version>/` source tree.
+
+---
+
+## protobuf-c
+
+Source: https://github.com/protobuf-c/protobuf-c  
+License: BSD-2-Clause License
+
+Files: `runtime-library/src/protobuf-c.c`, `runtime-library/include/protobuf-c.h`,
+and the generated `onnx.pb-c.*` files.
+
+Copyright (c) 2008-2015, Dave Benson and the protobuf-c authors.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---
+
+## COCO val2017 calibration images
+
+Source: https://cocodataset.org  
+Files: `conversion-toolchain/conversion_toolchain/val2017/*.jpg`  
+License: Creative Commons Attribution 4.0 (annotations) / images are licensed
+by their Flickr authors, mostly under Creative Commons licenses; see
+https://cocodataset.org/#termsofuse. Used here only as default quantization
+calibration data.
 
 ---
 
