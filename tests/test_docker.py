@@ -9,7 +9,7 @@ the output. Prerequisites:
 
   2. Hailo SDK deps directory (HAILO_DEPS_DIR env var) containing:
        hailo_dataflow_compiler-<version>-py3-none-linux_x86_64.whl
-       hailort-<version>-cp38-cp38-linux_x86_64.whl
+       hailort-<version>-cp310-cp310-linux_x86_64.whl
        hailort_<version>_amd64.deb
 
 Usage:
