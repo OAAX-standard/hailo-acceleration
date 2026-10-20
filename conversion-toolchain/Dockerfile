@@ -3,23 +3,10 @@ FROM ubuntu:22.04
 
 WORKDIR /app
 
-# Update the system and install dependencies
-RUN apt-get update && apt-get install -y software-properties-common
-
-# Add the deadsnakes PPA
-RUN add-apt-repository ppa:deadsnakes/ppa
-
-# Update the system again and install Python 3.8
-RUN apt-get update -y
-RUN export DEBIAN_FRONTEND=noninteractive && \
-    apt-get install -y python3.8 python3.8-distutils python3.8-venv python3.8-dev wget \
-    python3-tk
-
-RUN wget https://bootstrap.pypa.io/get-pip.py
-# Install pip
-RUN python3.8 get-pip.py
-# Verify the installation
-RUN python3.8 --version
+# Python 3.10 is Ubuntu 22.04's system Python (no PPA needed). Its venv bundles pip.
+RUN export DEBIAN_FRONTEND=noninteractive && apt-get update -y && apt-get install -y \
+    python3 python3-venv python3-dev python3-distutils wget python3-tk
+RUN python3 --version
 
 RUN echo "## Update and install packages"
 
@@ -38,7 +25,7 @@ COPY conversion_toolchain /app/conversion_toolchain
 COPY scripts/ /app/scripts
 
 RUN echo "### Installing Python dependencies:"
-RUN python3.8 -m venv /app/env
+RUN python3 -m venv /app/env
 ENV PATH="/app/env/bin:$PATH"
 RUN pip install -r requirements.txt
 

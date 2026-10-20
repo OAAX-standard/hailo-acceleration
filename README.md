@@ -86,7 +86,7 @@ The toolchain requires the following Hailo SDK packages mounted at `/app/hailo-d
 inside the container at runtime (not at build time):
 
 - `hailo_dataflow_compiler-<version>-py3-none-linux_x86_64.whl`
-- `hailort-<version>-cp38-cp38-linux_x86_64.whl`
+- `hailort-<version>-cp310-cp310-linux_x86_64.whl` (the image uses Python 3.10)
 - `hailort_<version>_amd64.deb`
 
 ```bash
