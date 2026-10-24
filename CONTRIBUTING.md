@@ -34,5 +34,8 @@ pip install pytest onnx Pillow                        # Python tests (Docker ima
 pytest tests/test_docker.py::TestErrorHandling -v
 ```
 
+CI also checks C formatting with `clang-format-19 --dry-run --Werror` over `runtime-library/src` and `runtime-library/include`
+(the `.clang-format` in the repository root; the generated protobuf files are excluded, see `.github/workflows/ci.yml`).
+
 Without `HAILO_DEPS_DIR` set, the Docker error-handling tests skip, so a green run only proves the build. The full
 conversion and inference tests need the Hailo SDK packages and a Hailo device; see the [README](README.md#testing).
