@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing! Before you start, please read the
 [OAAX general contributing guide](https://github.com/OAAX-standard/OAAX/blob/main/CONTRIBUTING.md)
-for project-wide conventions (bug reports, commit messages and DCO sign-off, code style).
+for project-wide conventions (bug reports, commit messages and DCO sign-off).
 
 ## How to contribute
 
@@ -20,8 +20,9 @@ CI builds on Ubuntu 22.04 (x86_64). Install the build dependencies once per mach
 sudo bash scripts/setup-env.sh
 ```
 
-`setup-env.sh` installs system packages and downloads CMake 3.31.7 into `/opt`, replacing the `cmake` links in
-`/usr/local/bin`: use a VM or container if you do not want that. The runtime build also needs `patchelf`
+`setup-env.sh` is required (the runtime build expects its compilers in `/opt`). It installs system packages and downloads two
+compiler toolchains (`x86_64-unknown-linux-gnu-gcc-9.5.0`, `gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu`) and CMake 3.31.7 into `/opt`,
+replacing the `cmake` links in `/usr/local/bin`: use a VM or container if you do not want that. The runtime build also needs `patchelf`
 (`sudo apt-get install patchelf`), which the script does not install.
 
 Building the conversion toolchain needs Docker, and converting models needs the Hailo SDK packages listed in the
