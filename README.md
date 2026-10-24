@@ -267,3 +267,11 @@ s3://oaax/conversion-toolchain/latest/HAILO/oaax-hailo-toolchain.tar
 Community contributions and usage examples are available in the
 [OAAX contributions](https://github.com/oaax-standard/contributions) and
 [examples](https://github.com/oaax-standard/examples) repositories.
+
+## Contributing
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Every commit needs a DCO sign-off (`git commit -s`).
+
+## License
+
+Apache 2.0, see [LICENSE](LICENSE).
