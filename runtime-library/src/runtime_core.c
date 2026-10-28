@@ -199,16 +199,25 @@ static Tensors *run_inference(ModelState *m, OrtSession *session,
   OrtValue **input_values = (OrtValue **)calloc(n_in, sizeof(OrtValue *));
   OrtValue **output_values =
       (OrtValue **)calloc(m->num_outputs, sizeof(OrtValue *));
+  /* Bind inputs by the host's tensor names, not by position: hosts may send
+   * them in any order (the AI Manager sends the mask before nms_sensitivity).
+   */
+  const char **input_names = (const char **)calloc(n_in, sizeof(char *));
   Tensors *result = NULL;
   int64_t *shape_buf = NULL;
 
-  if (!input_values || !output_values) {
+  if (!input_values || !output_values || !input_names) {
     set_error("[model %d] OOM in run_inference", m->model_id);
     goto cleanup;
   }
 
   for (int i = 0; i < n_in; i++) {
     TensorDescriptor *td = &input->tensors[i];
+    if (!td->name) {
+      set_error("[model %d] Input tensor %d has no name", m->model_id, i);
+      goto cleanup;
+    }
+    input_names[i] = td->name;
     ONNXTensorElementDataType ort_type =
         tensor_element_type_to_ort_type(td->data_type);
 
@@ -232,7 +241,7 @@ static Tensors *run_inference(ModelState *m, OrtSession *session,
   }
 
   if (process_ort_status(api->Run(session, m->run_options,
-                                  (const char *const *)m->input_names,
+                                  (const char *const *)input_names,
                                   (const OrtValue *const *)input_values, n_in,
                                   (const char *const *)m->output_names,
                                   m->num_outputs, output_values)) != 0) {
@@ -245,6 +254,7 @@ static Tensors *run_inference(ModelState *m, OrtSession *session,
     set_error("[model %d] build_output failed (OOM)", m->model_id);
 
 cleanup:
+  free(input_names);
   if (input_values) {
     for (int i = 0; i < n_in; i++)
       if (input_values[i])
