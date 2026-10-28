@@ -84,6 +84,8 @@ set(CMAKE_VERBOSE_MAKEFILE ON)
 set(CMAKE_BUILD_FLAGS " ${CMAKE_BUILD_FLAGS} -std=c99 -fno-common -Wall -Wextra")
 set(CMAKE_BUILD_FLAGS " ${CMAKE_BUILD_FLAGS} -Wno-missing-field-initializers -fno-exceptions")
 set(CMAKE_BUILD_FLAGS " ${CMAKE_BUILD_FLAGS} -Wno-attribute-warning -fdata-sections -ffunction-sections -Wl,--gc-sections ")
+# Keep every internal symbol private to this copy of the library (see runtime_exports.version).
+set(CMAKE_BUILD_FLAGS " ${CMAKE_BUILD_FLAGS} -fvisibility=hidden -fno-gnu-unique ")
 
 set(CMAKE_C_FLAGS " ${CMAKE_C_FLAGS} ${CMAKE_BUILD_FLAGS}  -D_GNU_SOURCE -I${CROSS_ROOT}/include")
 set(CMAKE_CXX_FLAGS " ${CMAKE_CXX_FLAGS} ${CMAKE_BUILD_FLAGS}  -D_GNU_SOURCE -I${CROSS_ROOT}/include")
@@ -156,6 +158,8 @@ target_link_libraries(RuntimeLibrary PUBLIC cpuinfo)
 
 target_link_libraries(RuntimeLibrary PUBLIC "-Wl,-rpath,\$ORIGIN")
 target_link_libraries(RuntimeLibrary PUBLIC -Wl,--disable-new-dtags)
+# Export only the OAAX v2 API; the prebuilt ORT static libs ignore -fvisibility, so this must happen at link time.
+target_link_options(RuntimeLibrary PRIVATE "-Wl,--version-script=${SRC_DIR}/runtime_exports.version")
 
 target_include_directories(RuntimeLibrary PUBLIC ${ONNX_RUNTIME_DIR}/${GENERIC_BUILD_TARGET}-${HAILORT_VERSION}/include)
 target_include_directories(RuntimeLibrary PUBLIC ${ONNX_RUNTIME_DIR}/${GENERIC_BUILD_TARGET}-${HAILORT_VERSION}/include/onnxruntime/core/session)

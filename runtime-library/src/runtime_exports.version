@@ -1,0 +1,26 @@
+/*
+ * Restricts the dynamic symbol table of libRuntimeLibrary.so to the OAAX v2 C
+ * API. ONNX Runtime/onnx/protobuf/abseil are linked in statically with default
+ * visibility, so thousands of internal symbols were exported, among them ones
+ * GCC marks GNU_UNIQUE (ORT's DataTypeRegistry singleton and its guard
+ * variable). GNU_UNIQUE symbols are bound process-wide across every dlopen()'d
+ * copy of this library and pin the old copy in memory after dlclose(). The AI
+ * Manager reselects a runtime by re-extracting the package and loading a new
+ * copy, whose ORT then talked to the old copy's registry and failed every model
+ * load with "MLDataType for: tensor(float) is not currently registered".
+ * Same fix as reference-implementation and nvidia-acceleration.
+ */
+OAAX_V2 {
+  global:
+    runtime_init;
+    runtime_load_models;
+    runtime_enqueue_input;
+    runtime_retrieve_output;
+    runtime_cleanup;
+    runtime_get_error;
+    runtime_get_version;
+    runtime_get_name;
+    runtime_get_info;
+  local:
+    *;
+};

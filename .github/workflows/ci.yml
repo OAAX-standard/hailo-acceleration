@@ -104,6 +104,9 @@ jobs:
       - name: Build runtime (${{ matrix.platform }})
         run: bash runtime-library/build-runtime.sh ${{ matrix.platform }} ${{ matrix.hailort_version }}
 
+      - name: Check exported symbols (no GNU_UNIQUE, OAAX API only)
+        run: bash tests/check_exports.sh runtime-library/build/libRuntimeLibrary.so
+
       - name: Build C++ tests (X86_64 only)
         if: matrix.platform == 'X86_64'
         run: bash tests/runtime/build-tests.sh
