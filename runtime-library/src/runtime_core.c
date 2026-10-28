@@ -199,8 +199,9 @@ static Tensors *run_inference(ModelState *m, OrtSession *session,
   OrtValue **input_values = (OrtValue **)calloc(n_in, sizeof(OrtValue *));
   OrtValue **output_values =
       (OrtValue **)calloc(m->num_outputs, sizeof(OrtValue *));
-  /* Bind inputs by the host's tensor names, not by position: hosts may send them
-   * in any order (the AI Manager sends the mask before nms_sensitivity). */
+  /* Bind inputs by the host's tensor names, not by position: hosts may send
+   * them in any order (the AI Manager sends the mask before nms_sensitivity).
+   */
   const char **input_names = (const char **)calloc(n_in, sizeof(char *));
   Tensors *result = NULL;
   int64_t *shape_buf = NULL;
