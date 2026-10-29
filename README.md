@@ -47,7 +47,7 @@ tests/
   test_yolo_models.py   Parametrized multi-model conversion suite
 scripts/
   setup-env.sh          Install cross-compilation toolchains
-.github/workflows/      CI (lint, toolchain build, runtime build + tests, S3 upload)
+.github/workflows/      CI (lint, toolchain build, runtime build + tests, publish to S3 on a tag)
 VERSION, CHANGELOG.md   Release version and history
 ThirdPartyNotices.txt   Licenses of bundled third-party code
 ```
@@ -254,7 +254,7 @@ See [tests/README.md](tests/README.md) for full details.
 
 ## Pre-built artifacts
 
-Pre-built runtimes (one per HailoRT version) are published to S3 on every CI run (`latest` only from `main`; `<version>` is the content of `VERSION` on `main`, the branch name on PRs):
+Pre-built runtimes (one per HailoRT version) are published to S3 only when a `vX.Y.Z` tag is pushed (after all tests pass; `<version>` is the content of `VERSION`, which must match the tag, and the commit must be on `main`). A published version is never overwritten and `latest` follows the newest release. Pull requests upload to `<branch>/` for testing (overwritten on each run, never `latest`; a branch named like a release is refused); pushes to `main` upload nothing. The upload is `scripts/publish-artifacts.sh`.
 
 ```
 s3://oaax/runtimes/<version>/HAILO/{x86_64,aarch64}/Ubuntu/library-<hailort_version>.tar.gz

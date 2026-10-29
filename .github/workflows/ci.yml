@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -58,36 +59,6 @@ jobs:
           path: conversion-toolchain/artifacts/oaax-hailo-toolchain.tar
           retention-days: 1
 
-      - name: Determine version
-        run: |
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            version=$(cat VERSION)
-          else
-            version="$GITHUB_HEAD_REF"
-          fi
-          echo "version=$version" >> "$GITHUB_ENV"
-
-      - name: Install s3cmd
-        run: sudo apt-get update -y && sudo apt-get install -y s3cmd
-
-      - name: Upload toolchain to S3
-        env:
-          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
-          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
-          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
-        run: |
-          s3cmd_flags="--access_key=$S3_ACCESS_KEY --secret_key=$S3_SECRET_KEY --host=$S3_ENDPOINT_URL --host-bucket=%(bucket)s.$S3_ENDPOINT_URL --bucket-location=us-east-1 --ssl"
-          # shellcheck disable=SC2086
-          s3cmd $s3cmd_flags put \
-            "conversion-toolchain/artifacts/oaax-hailo-toolchain.tar" \
-            "s3://oaax/conversion-toolchain/${{ env.version }}/HAILO/oaax-hailo-toolchain.tar"
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            # shellcheck disable=SC2086
-            s3cmd $s3cmd_flags put \
-              "conversion-toolchain/artifacts/oaax-hailo-toolchain.tar" \
-              "s3://oaax/conversion-toolchain/latest/HAILO/oaax-hailo-toolchain.tar"
-          fi
-
   build-and-test:
     name: Build runtime + tests (${{ matrix.platform }})
     runs-on: ubuntu-22.04
@@ -126,33 +97,46 @@ jobs:
           path: runtime-library/artifacts/runtime-library-${{ matrix.platform }}-${{ matrix.hailort_version }}.tar.gz
           retention-days: 1
 
-      - name: Determine version
+  # Uploads the tested bytes: only a v* tag publishes a release, `main` pushes upload nothing.
+  publish:
+    name: Publish to the OAAX bucket
+    runs-on: ubuntu-22.04
+    needs: [lint, build-toolchain, build-and-test]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the tag check below needs main's history
+
+      - name: Tag must match VERSION and be on main
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            version=$(cat VERSION)
-          else
-            version="$GITHUB_HEAD_REF"
-          fi
-          echo "version=$version" >> "$GITHUB_ENV"
+          [ "${TAG#v}" = "$(cat VERSION)" ] || { echo "tag $TAG does not match VERSION $(cat VERSION)"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$TAG is not on main, tag a commit of main"; exit 1; }
+
+      - name: Download the build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
       - name: Install s3cmd
         run: sudo apt-get update -y && sudo apt-get install -y s3cmd
 
-      - name: Upload runtime to S3 (${{ matrix.platform }})
+      - name: Upload to S3
         env:
           S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+        # The branch name reaches the script only through the environment (GITHUB_HEAD_REF), never through ${{ }}.
         run: |
-          arch=$([ "${{ matrix.platform }}" = "X86_64" ] && echo "x86_64" || echo "aarch64")
-          s3cmd_flags="--access_key=$S3_ACCESS_KEY --secret_key=$S3_SECRET_KEY --host=$S3_ENDPOINT_URL --host-bucket=%(bucket)s.$S3_ENDPOINT_URL --bucket-location=us-east-1 --ssl"
-          # shellcheck disable=SC2086
-          s3cmd $s3cmd_flags put \
-            "runtime-library/artifacts/runtime-library-${{ matrix.platform }}-${{ matrix.hailort_version }}.tar.gz" \
-            "s3://oaax/runtimes/${{ env.version }}/HAILO/${arch}/Ubuntu/library-${{ matrix.hailort_version }}.tar.gz"
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            # shellcheck disable=SC2086
-            s3cmd $s3cmd_flags put \
-              "runtime-library/artifacts/runtime-library-${{ matrix.platform }}-${{ matrix.hailort_version }}.tar.gz" \
-              "s3://oaax/runtimes/latest/HAILO/${arch}/Ubuntu/library-${{ matrix.hailort_version }}.tar.gz"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            mode=release name=$(cat VERSION)
+          elif [ "$GITHUB_EVENT_NAME" = pull_request ] && [ -n "$S3_ACCESS_KEY" ]; then
+            mode=branch name=$GITHUB_HEAD_REF
+          else
+            mode=dry name=$(cat VERSION)
           fi
+          bash scripts/publish-artifacts.sh "$mode" "$name" artifacts

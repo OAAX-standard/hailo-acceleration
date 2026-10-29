@@ -45,4 +45,4 @@ is in `.github/workflows/ci.yml`.
 Without `HAILO_DEPS_DIR` set, the Docker error-handling tests skip, so a green run only proves the build. The full
 conversion and inference tests need the Hailo SDK packages and a Hailo device; see the [README](README.md#testing).
 
-Jobs that upload artifacts need repository secrets and can fail on a PR from a fork; that is not caused by your change.
+The `publish` job needs repository secrets: on a PR from a fork it only does a dry run (files checked, keys printed, nothing uploaded). Releases are uploaded only when a maintainer pushes a `vX.Y.Z` tag. Adding a HailoRT version means updating the CI matrix and `scripts/publish-artifacts.sh`.
