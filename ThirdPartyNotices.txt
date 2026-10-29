@@ -195,3 +195,15 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---
+
+## Conversion toolchain image
+
+The Docker image built from `conversion-toolchain/` (published as
+`oaax-hailo-toolchain.tar`) contains Ubuntu 22.04 packages and the Python
+packages installed from `conversion-toolchain/requirements.txt` (`lgg`, `onnx`,
+`onnxsim` and their dependencies). They are not vendored in this repository and
+keep their own licenses, which are included in the image. The proprietary Hailo
+Dataflow Compiler and the HailoRT wheels/deb are not part of the image: you
+mount them at run time under their own Hailo license.
